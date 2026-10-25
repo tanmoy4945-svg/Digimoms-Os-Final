@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import crypto from 'crypto';
 import fs from 'fs';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { createClient } from '@supabase/supabase-js';
 import * as admin from 'firebase-admin';
 
@@ -255,6 +255,8 @@ export async function createExpressApp() {
         description: JSON.stringify({ tokens: cleanTokens, updated_at: new Date().toISOString() })
       }]).then(({ error }) => {
         if (error) console.warn('[FCM Sync] Supabase insert warning:', error.message);
+      }).catch(err => {
+        console.warn('[FCM Sync] Supabase insert error:', err);
       });
     }
 
@@ -2234,14 +2236,7 @@ export async function createExpressApp() {
         });
       }
 
-      const ai = new GoogleGenAI({
-        apiKey,
-        httpOptions: {
-          headers: {
-            'User-Agent': 'aistudio-build'
-          }
-        }
-      });
+      const ai = new GoogleGenerativeAI(apiKey);
 
       const langFull = language === 'bn' ? 'Bengali (বাংলা)' : language === 'hi' ? 'Hindi (हिन्दी)' : 'English';
 
@@ -2306,16 +2301,14 @@ DigiMoms OS Workflows:
 Keep response concise, clear, friendly, and formatted with clean bullet points or numbered steps where applicable.
       `;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.6-flash',
-        contents: prompt,
-        config: {
-          systemInstruction,
-          temperature: 0.3
-        }
+      const model = ai.getGenerativeModel({ 
+        model: 'gemini-1.5-flash',
+        systemInstruction
       });
-
-      const answer = response.text || '';
+      
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      const answer = response.text();
       return res.json({ success: true, answer });
     } catch (err: any) {
       console.warn('Gemini AI Help endpoint warning:', err.message || err);
