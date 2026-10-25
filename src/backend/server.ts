@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import { GoogleGenAI } from '@google/genai';
 import { createClient } from '@supabase/supabase-js';
-import admin from 'firebase-admin';
+import * as admin from 'firebase-admin';
 
 // Initialize Firebase Admin SDK
 try {
