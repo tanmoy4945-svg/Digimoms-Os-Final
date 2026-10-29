@@ -42,8 +42,10 @@ export async function createExpressApp() {
   const app = express();
   const PORT = 3000;
 
+  const IS_VERCEL = process.env.VERCEL === '1';
   const DATA_DIR = path.join(process.cwd(), 'data');
-  if (!fs.existsSync(DATA_DIR)) {
+  
+  if (!IS_VERCEL && !fs.existsSync(DATA_DIR)) {
     try {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     } catch (err) {
@@ -51,15 +53,25 @@ export async function createExpressApp() {
     }
   }
 
+  // In-memory cache for Vercel since we can't write to disk
+  const vCache = new Map<string, any>();
+
   function readJsonFile<T>(filename: string, defaultVal: T): T {
     try {
+      if (IS_VERCEL && vCache.has(filename)) {
+        return vCache.get(filename);
+      }
+
       const filePath = path.join(DATA_DIR, filename);
       if (!fs.existsSync(filePath)) {
-        fs.writeFileSync(filePath, JSON.stringify(defaultVal, null, 2), 'utf-8');
+        console.log(`[readJsonFile] File not found: ${filename}, using default.`);
         return defaultVal;
       }
       const raw = fs.readFileSync(filePath, 'utf-8');
-      return JSON.parse(raw) as T;
+      const parsed = JSON.parse(raw) as T;
+      
+      if (IS_VERCEL) vCache.set(filename, parsed);
+      return parsed;
     } catch (err) {
       console.warn(`Error reading ${filename}, using default:`, err);
       return defaultVal;
@@ -68,6 +80,12 @@ export async function createExpressApp() {
 
   function writeJsonFile<T>(filename: string, data: T): void {
     try {
+      if (IS_VERCEL) {
+        vCache.set(filename, data);
+        console.log(`[writeJsonFile] Vercel mode: Saved ${filename} to in-memory cache.`);
+        return;
+      }
+
       const filePath = path.join(DATA_DIR, filename);
       fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
     } catch (err) {
@@ -75,8 +93,37 @@ export async function createExpressApp() {
     }
   }
 
+  app.use((req: any, _res, next) => {
+    if (req.body !== undefined && req.body !== null) {
+      if (typeof req.body === 'string' && req.body.trim().length > 0) {
+        try {
+          if (req.headers['content-type']?.includes('application/json')) {
+            req.body = JSON.parse(req.body);
+          } else {
+            const params = new URLSearchParams(req.body);
+            const obj: Record<string, any> = {};
+            params.forEach((v, k) => { obj[k] = v; });
+            req.body = obj;
+          }
+        } catch (e) {}
+      }
+      req._body = true;
+    }
+    if (req.readableEnded || req.complete) {
+      req._body = true;
+    }
+    next();
+  });
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
+
+  // Diagnostic logging for backend routing issues
+  app.use((req, res, next) => {
+    if (req.url !== '/api/realtime/events') { // Skip high-frequency SSE logs
+      console.log(`[Backend Request] ${req.method} ${req.url}`);
+    }
+    next();
+  });
 
   // Helper to send push notifications to both FCM and Expo Push Services
   async function sendPushNotification(restaurantId: string, title: string, body: string, data: any = {}) {
@@ -247,15 +294,15 @@ export async function createExpressApp() {
     // Also persist to Supabase audit_logs for cloud-sync/persistence on read-only environments like Vercel
     const cleanTokens = tokensToAdd.filter(t => typeof t === 'string' && t.trim().length > 5);
     if (cleanTokens.length > 0) {
-      serverSupabase.from('audit_logs').insert([{
+      (serverSupabase.from('audit_logs').insert([{
         id: crypto.randomUUID(),
         restaurant_id: restaurantId,
         actor_type: 'system',
         action: 'PUSH_TOKEN_REGISTRATION',
         description: JSON.stringify({ tokens: cleanTokens, updated_at: new Date().toISOString() })
-      }]).then(({ error }) => {
+      }]) as any).then(({ error }: any) => {
         if (error) console.warn('[FCM Sync] Supabase insert warning:', error.message);
-      }).catch(err => {
+      }).catch((err: any) => {
         console.warn('[FCM Sync] Supabase insert error:', err);
       });
     }
@@ -592,11 +639,11 @@ export async function createExpressApp() {
         const isCash = order.payment_mode === 'cash' || order.payment_mode === 'partial';
         const title = isCash ? '💵 New Cash Order' : '🔔 New Order Received';
         const body = `Table ${order.table_number || 'Takeaway'} (Order #${order.order_number}): ₹${order.grand_total}. Please check dashboard!`;
-        sendPushNotification(order.restaurant_id, title, body, {
+        (sendPushNotification(order.restaurant_id, title, body, {
           orderId: order.id,
           type: 'new_order',
           restaurant_id: order.restaurant_id
-        }).catch(pErr => console.warn('[Orders Save] Push dispatch note:', pErr));
+        }) as any).catch((pErr: any) => console.warn('[Orders Save] Push dispatch note:', pErr));
       }
     }
 
@@ -1077,13 +1124,13 @@ export async function createExpressApp() {
           
           // Using authoritative broadcast for faster UI response
           channelsToNotify.forEach(chName => {
-            serverSupabase.channel(chName).send({
+            (serverSupabase.channel(chName).send({
               type: 'broadcast',
               event: 'order_event',
               payload: { order: finalOrderObj }
-            }).catch(e => console.warn(`Broadcast fail to ${chName}:`, e));
+            }) as any).catch((e: any) => console.warn(`Broadcast fail to ${chName}:`, e));
 
-            serverSupabase.channel(chName).send({
+            (serverSupabase.channel(chName).send({
               type: 'broadcast',
               event: 'order_status_event',
               payload: {
@@ -1097,7 +1144,7 @@ export async function createExpressApp() {
                 online_amount: finalOrderObj.online_amount,
                 cash_due: 0
               }
-            }).catch(e => console.warn(`Status Broadcast fail to ${chName}:`, e));
+            }) as any).catch((e: any) => console.warn(`Status Broadcast fail to ${chName}:`, e));
           });
         } catch (bcastEx) {
           console.warn('[serverSupabase] Realtime broadcast notice:', bcastEx);
@@ -1112,7 +1159,7 @@ export async function createExpressApp() {
   }
 
   // API Route: PhonePe Callback Handler (POST / GET from PhonePe redirect or S2S callback)
-  app.all('/api/phonepe/callback', async (req, res) => {
+  app.all(['/api/phonepe/callback', '/phonepe/callback'], async (req, res) => {
     try {
       const data = req.method === 'POST' ? req.body : req.query;
       const reqQuery = req.query || {};
@@ -1951,7 +1998,7 @@ export async function createExpressApp() {
   });
 
   // API Route: PayU Callback Handler (POST & GET from PayU Gateway)
-  app.all('/api/payu/callback', async (req, res) => {
+  app.all(['/api/payu/callback', '/payu/callback', '/callback', '/api/callback'], async (req, res) => {
     try {
       const data = req.method === 'POST' ? req.body : req.query;
       const status = data.status || (data.unmappedstatus === 'captured' ? 'success' : 'pending');
@@ -1984,17 +2031,98 @@ export async function createExpressApp() {
         });
       }
 
-      const isSubscription = udf5 === '1' || txnid.startsWith('SUB_') || txnid.startsWith('RENEW_');
+      const isSubscription = udf5 === '1' || txnid.startsWith('SUB_') || txnid.startsWith('RENEW_') || (!udf2 && udf1);
       const statusParam = isSuccess ? 'success' : 'cancelled';
 
       let targetRedirectUrl = '/';
       if (isSubscription) {
-        targetRedirectUrl = `/owner-dashboard?payment=${statusParam}&txnid=${encodeURIComponent(txnid)}`;
+        targetRedirectUrl = `/owner-dashboard?payment=${statusParam}&txnid=${encodeURIComponent(txnid)}&renewed=1`;
       } else if (udf3) {
         const basePath = udf3.startsWith('/') ? udf3 : `/q/${encodeURIComponent(udf3)}`;
         targetRedirectUrl = `${basePath}?order_id=${encodeURIComponent(udf2)}&payment=${statusParam}&txnid=${encodeURIComponent(txnid)}`;
       } else if (udf2) {
         targetRedirectUrl = `/?order_id=${encodeURIComponent(udf2)}&payment=${statusParam}&txnid=${encodeURIComponent(txnid)}`;
+      }
+
+      // If subscription payment succeeded, authoritatively activate restaurant & extend expiry in Supabase!
+      if (isSuccess && isSubscription && udf1) {
+        try {
+          console.log(`[PayU Callback] Activating Subscription for restaurant: ${udf1}, txnid: ${txnid}`);
+          
+          const { data: currentRest } = await serverSupabase
+            .from('restaurants')
+            .select('*')
+            .eq('id', udf1)
+            .maybeSingle();
+
+          const now = Date.now();
+          const currentExpiryMs = new Date(currentRest?.subscription_end || currentRest?.trial_end || now).getTime();
+          const baseDate = new Date(currentExpiryMs > now ? currentExpiryMs : now);
+          
+          // Add 1 calendar month
+          const newExpiryDate = new Date(baseDate.getTime());
+          newExpiryDate.setMonth(newExpiryDate.getMonth() + 1);
+          const newSubEndIso = newExpiryDate.toISOString();
+
+          // 1. Authoritative update in Supabase restaurants table (status: 'active', extended subscription_end)
+          const { error: restUpdateErr } = await serverSupabase
+            .from('restaurants')
+            .update({
+              subscription_end: newSubEndIso,
+              status: 'active',
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', udf1);
+
+          if (restUpdateErr) {
+            console.error('[PayU Callback] Error updating restaurant in Supabase:', restUpdateErr.message);
+          } else {
+            console.log(`[PayU Callback] Successfully marked restaurant ${udf1} active with new expiry: ${newSubEndIso}`);
+          }
+
+          // 2. Insert into Supabase subscription_history
+          const historyId = crypto.randomUUID();
+          await serverSupabase
+            .from('subscription_history')
+            .insert([{
+              id: historyId,
+              restaurant_id: udf1,
+              plan_name: 'Monthly Standard Subscription',
+              amount: amount || (currentRest?.monthly_subscription_fee || 999),
+              duration_months: 1,
+              days_added: 30,
+              payment_id: txnid || mihpayid || `PAYU_${Date.now()}`,
+              start_date: baseDate.toISOString(),
+              end_date: newSubEndIso,
+              previous_expiry: new Date(currentExpiryMs).toISOString(),
+              new_expiry: newSubEndIso,
+              payment_status: 'paid',
+              payment_mode: 'live',
+              subscription_type: 'RENEWAL',
+              granted_by: 'Owner Payment (PayU Gateway)',
+              commission_status: currentRest?.partner_mobile ? 'pending' : undefined,
+              created_at: new Date().toISOString()
+            }]);
+
+          // 3. Save to local fallback cache
+          try {
+            const histList = readJsonFile<any[]>('subscription_history.json', []);
+            histList.unshift({
+              id: historyId,
+              restaurant_id: udf1,
+              amount: amount || (currentRest?.monthly_subscription_fee || 999),
+              payment_id: txnid || mihpayid,
+              end_date: newSubEndIso,
+              payment_status: 'paid',
+              subscription_type: 'RENEWAL',
+              created_at: new Date().toISOString()
+            });
+            writeJsonFile('subscription_history.json', histList.slice(0, 500));
+          } catch (hErr) {}
+
+        } catch (subErr) {
+          console.error('[PayU Callback] Subscription update error:', subErr);
+        }
       }
 
       // If payment failed or was cancelled, ensure any pending unpaid food order is discarded/cancelled
@@ -2333,7 +2461,7 @@ Keep response concise, clear, friendly, and formatted with clean bullet points o
     } catch (e) {
       console.warn('Vite dev server failed to start, falling back to static:', e);
     }
-  } else {
+  } else if (!IS_VERCEL) {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
@@ -2341,37 +2469,39 @@ Keep response concise, clear, friendly, and formatted with clean bullet points o
     });
   }
 
-  // Supabase Realtime Listener for Push Notifications
-  serverSupabase
-    .channel('server-push-notifications')
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, async (payload) => {
-      const newOrder = payload.new;
-      if (newOrder && newOrder.restaurant_id) {
-        const isCash = newOrder.payment_mode === 'cash' || newOrder.payment_mode === 'partial';
-        const title = isCash ? '💵 New Cash Order' : '🔔 New Order Received';
-        const body = `Table ${newOrder.table_number || 'Takeaway'} (Order #${newOrder.order_number}): ₹${newOrder.grand_total}. Check your dashboard!`;
-        
-        sendPushNotification(newOrder.restaurant_id, title, body, { 
-          orderId: newOrder.id, 
-          type: 'new_order',
-          restaurant_id: newOrder.restaurant_id 
-        });
-      }
-    })
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'call_waiter' }, async (payload) => {
-      const newCall = payload.new;
-      if (newCall && newCall.restaurant_id && newCall.status === 'pending') {
-        const title = '👋 Waiter Called!';
-        const body = `Table ${newCall.table_number} is requesting: ${newCall.request_type.toUpperCase()}`;
-        
-        sendPushNotification(newCall.restaurant_id, title, body, { 
-          callId: newCall.id, 
-          type: 'call_waiter',
-          restaurant_id: newCall.restaurant_id 
-        });
-      }
-    })
-    .subscribe();
+  // Supabase Realtime Listener for Push Notifications (only in persistent server, not ephemeral serverless)
+  if (!IS_VERCEL && !process.env.NOW_REGION) {
+    serverSupabase
+      .channel('server-push-notifications')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, async (payload) => {
+        const newOrder = payload.new;
+        if (newOrder && newOrder.restaurant_id) {
+          const isCash = newOrder.payment_mode === 'cash' || newOrder.payment_mode === 'partial';
+          const title = isCash ? '💵 New Cash Order' : '🔔 New Order Received';
+          const body = `Table ${newOrder.table_number || 'Takeaway'} (Order #${newOrder.order_number}): ₹${newOrder.grand_total}. Check your dashboard!`;
+          
+          sendPushNotification(newOrder.restaurant_id, title, body, { 
+            orderId: newOrder.id, 
+            type: 'new_order',
+            restaurant_id: newOrder.restaurant_id 
+          });
+        }
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'call_waiter' }, async (payload) => {
+        const newCall = payload.new;
+        if (newCall && newCall.restaurant_id && newCall.status === 'pending') {
+          const title = '👋 Waiter Called!';
+          const body = `Table ${newCall.table_number} is requesting: ${newCall.request_type.toUpperCase()}`;
+          
+          sendPushNotification(newCall.restaurant_id, title, body, { 
+            callId: newCall.id, 
+            type: 'call_waiter',
+            restaurant_id: newCall.restaurant_id 
+          });
+        }
+      })
+      .subscribe();
+  }
 
   return app;
 }
@@ -2387,8 +2517,11 @@ export default async function getApp() {
 }
 
 // Standalone execution (Standard AI Studio / Node environment)
-const isMain = process.env.NODE_ENV !== 'production' || 
-               (!process.env.VERCEL && (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('server.ts') || process.argv[1]?.endsWith('server.cjs')));
+const isVercel = Boolean(process.env.VERCEL || process.env.NOW_REGION);
+const isMain = !isVercel && (
+  process.env.NODE_ENV !== 'production' || 
+  (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('server.ts') || process.argv[1]?.endsWith('server.cjs'))
+);
 
 if (isMain) {
   createExpressApp().then(app => {

@@ -92,7 +92,7 @@ interface SaaSContextType {
   ceoStaffList: CeoStaffMember[];
   currentCeoStaff: CeoStaffMember | null;
   setCurrentCeoStaff: (staff: CeoStaffMember | null) => void;
-  addCeoStaffMember: (name: string, mobile: string, pass: string, role: 'manager' | 'support' | 'billing', permissions: CeoStaffPermissions) => Promise<void>;
+  addCeoStaffMember: (name: string, mobile: string, pass: string, role: 'manager' | 'support' | 'billing' | 'partner', permissions: CeoStaffPermissions) => Promise<void>;
   updateCeoStaffMember: (id: string, updates: Partial<CeoStaffMember>) => Promise<void>;
   toggleCeoStaffStatus: (id: string) => Promise<void>;
   deleteCeoStaffMember: (id: string) => Promise<void>;
@@ -251,13 +251,13 @@ const parseRouteFromPath = (
 ): { view: ActiveView; shortCode: string; slug: string } => {
   const cleanPath = pathname.trim().replace(/\/+$/, '') || '/';
 
-  if (cleanPath === '/login-ceo' || cleanPath === '/ceo') {
+  if (cleanPath === '/login-ceo' || cleanPath === '/ceo' || cleanPath === '/ceo-login') {
     return { view: isCeoAuth ? 'ceo-dashboard' : 'ceo-login', shortCode: '', slug: '' };
   }
-  if (cleanPath === '/login-owner' || cleanPath === '/owner' || cleanPath === '/login') {
+  if (cleanPath === '/login-owner' || cleanPath === '/owner' || cleanPath === '/owner-login' || cleanPath === '/login') {
     return { view: owner ? 'owner-dashboard' : 'owner-login', shortCode: '', slug: '' };
   }
-  if (cleanPath === '/login-staff' || cleanPath === '/staff' || cleanPath === '/login-worker' || cleanPath === '/worker') {
+  if (cleanPath === '/login-staff' || cleanPath === '/staff' || cleanPath === '/staff-login' || cleanPath === '/login-worker' || cleanPath === '/worker') {
     return {
       view: staff ? (staff.role === 'kitchen' ? 'kitchen-terminal' : 'waiter-terminal') : 'staff-login',
       shortCode: '',
@@ -269,6 +269,7 @@ const parseRouteFromPath = (
   }
   if (
     cleanPath === '/owner-dashboard' ||
+    cleanPath === '/dashboard' ||
     cleanPath === '/owner-payment' ||
     cleanPath === '/subscription' ||
     cleanPath === '/renew' ||
@@ -529,6 +530,53 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setToast({ message, type });
     setTimeout(() => setToast(null), 3500);
   };
+
+  // Listen for Gateway Payment Callback or Renewal Redirect (?payment=success or BroadcastChannel)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handlePaymentConfirmationCheck = async () => {
+      const urlParams = new URLSearchParams(window.location.search);
+      const paymentStatus = urlParams.get('payment');
+      const renewed = urlParams.get('renewed');
+
+      if (paymentStatus === 'success' || renewed === '1') {
+        console.log('[SaaSContext] Detected Successful Payment/Renewal via URL parameters.');
+        
+        // Refresh all fresh data from Supabase immediately
+        try {
+          await fetchAllFromSupabase(true);
+        } catch (e) {}
+        
+        // Clean URL params cleanly without reloading page
+        const cleanUrl = window.location.pathname;
+        window.history.replaceState({}, '', cleanUrl);
+
+        showToast('🎉 পেমেন্ট সফল হয়েছে! আপনার সাবস্ক্রিপশন রিনিউ ও অ্যাকাউন্ট অ্যাক্টিভ করা হয়েছে।', 'success');
+      }
+    };
+
+    handlePaymentConfirmationCheck();
+
+    // Listen for BroadcastChannel events from PayU / Gateway popup windows
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        const bc = new BroadcastChannel('digimoms_payu_channel');
+        bc.onmessage = async (event) => {
+          if (event.data && event.data.type === 'PAYU_PAYMENT_CALLBACK' && event.data.status === 'success') {
+            console.log('[SaaSContext] Received PayU success event via BroadcastChannel:', event.data);
+            try {
+              await fetchAllFromSupabase(true);
+            } catch (e) {}
+            showToast('🎉 PayU পেমেন্ট সফল হয়েছে এবং অ্যাকাউন্ট অ্যাক্টিভ করা হয়েছে!', 'success');
+          }
+        };
+        return () => {
+          try { bc.close(); } catch (e) {}
+        };
+      }
+    } catch (e) {}
+  }, []);
 
   // Core Data Collections (Starts Empty - Loaded Purely From Supabase)
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
@@ -2316,7 +2364,7 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   });
 
-  const addCeoStaffMember = async (name: string, mobile: string, pass: string, role: 'manager' | 'support' | 'billing', permissions: CeoStaffPermissions) => {
+  const addCeoStaffMember = async (name: string, mobile: string, pass: string, role: 'manager' | 'support' | 'billing' | 'partner', permissions: CeoStaffPermissions) => {
     const cleanMobile = mobile.trim();
     const cleanName = name.trim();
 
@@ -2940,8 +2988,15 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     if (restErr) {
       console.error("Supabase INSERT Error:", restErr);
-      showToast(`Database Insert Failed [${restErr.code || 'ERR'}]: ${restErr.message}`, 'error');
-      const errToThrow = new Error(`Supabase Insert Error [${restErr.code}]: ${restErr.message}`);
+      
+      // Handle the generic "Failed to fetch" browser error specifically
+      if (String(restErr).includes('Failed to fetch') || (restErr as any).message?.includes('Failed to fetch')) {
+        showToast('Network Error: Failed to reach database. Please check your internet or disable AdBlockers/Privacy extensions.', 'error');
+      } else {
+        showToast(`Database Insert Failed [${restErr.code || 'ERR'}]: ${restErr.message}`, 'error');
+      }
+      
+      const errToThrow = new Error(`Supabase Insert Error [${restErr.code || 'FETCH_ERROR'}]: ${restErr.message}`);
       (errToThrow as any).code = restErr.code;
       (errToThrow as any).details = restErr.details || restErr.hint || '';
       throw errToThrow;

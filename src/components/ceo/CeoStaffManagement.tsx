@@ -162,6 +162,18 @@ const CEO_MENU_CATEGORIES: MenuCategory[] = [
       { key: 'can_delete_logs', label: 'Purge Audit Logs', description: 'Clear or purge security activity history logs', type: 'delete' },
     ]
   },
+  {
+    id: 'partners',
+    name: '12. Partner Commission Management',
+    icon: Users,
+    description: 'Lifetime partner earnings, commission clearing and partner directory',
+    color: 'amber',
+    items: [
+      { key: 'can_view_partners', label: 'View Partners & Earnings', description: 'View partner mobile numbers, linked restaurants and pending commissions', type: 'view' },
+      { key: 'can_edit_partners', label: 'Clear Commissions & Edit', description: 'Authorize marking partner commissions as cleared and update partner details', type: 'edit' },
+      { key: 'can_delete_partners', label: 'Reset / Delete Commissions', description: 'Reset cleared commissions back to pending or remove partner mappings', type: 'delete' },
+    ]
+  },
 ];
 
 // Helper: All permissions preset (Full Super Admin)
@@ -216,6 +228,10 @@ const ALL_PERMISSIONS_PRESET: CeoStaffPermissions = {
   can_view_logs: true,
   can_edit_logs: true,
   can_delete_logs: true,
+
+  can_view_partners: true,
+  can_edit_partners: true,
+  can_delete_partners: true,
 };
 
 // Helper: All restaurant permissions preset (Puro Restaurant Setup Specialist)
@@ -244,6 +260,9 @@ const ALL_RESTAURANT_PRESET: CeoStaffPermissions = {
   can_edit_feedback: true,
 
   can_view_logs: true,
+
+  can_view_partners: true,
+  can_edit_partners: true,
 };
 
 // Helper: Billing preset
@@ -258,6 +277,17 @@ const BILLING_PRESET: CeoStaffPermissions = {
   can_edit_payments: true,
   can_view_reports: true,
   can_edit_reports: true,
+  can_view_partners: true,
+  can_edit_partners: true,
+};
+
+// Helper: Partner Commission Manager preset
+const PARTNER_PRESET: CeoStaffPermissions = {
+  can_view_restaurants: true,
+  can_view_reports: true,
+  can_view_partners: true,
+  can_edit_partners: true,
+  can_view_logs: true,
 };
 
 // Helper: Tech & Database preset
@@ -323,7 +353,7 @@ export const CeoStaffManagement: React.FC<CeoStaffManagementProps> = ({
   const [newName, setNewName] = useState('');
   const [newMobile, setNewMobile] = useState('');
   const [newPassword, setNewPassword] = useState('ceoStaff123');
-  const [newRole, setNewRole] = useState<'manager' | 'support' | 'billing'>('manager');
+  const [newRole, setNewRole] = useState<'manager' | 'support' | 'billing' | 'partner'>('manager');
   const [newPermissions, setNewPermissions] = useState<CeoStaffPermissions>({ ...ALL_RESTAURANT_PRESET });
 
   const [passwordInput, setPasswordInput] = useState('');
@@ -513,6 +543,14 @@ export const CeoStaffManagement: React.FC<CeoStaffManagementProps> = ({
               className="px-3 py-1.5 rounded-xl bg-blue-600/20 hover:bg-blue-600/40 text-blue-200 border border-blue-500/30 text-[11px] font-bold transition-all flex items-center gap-1.5 cursor-pointer"
             >
               💳 Billing & Finance
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setPerms({ ...PARTNER_PRESET })}
+              className="px-3 py-1.5 rounded-xl bg-orange-600/20 hover:bg-orange-600/40 text-orange-200 border border-orange-500/30 text-[11px] font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+            >
+              🤝 Partner Manager
             </button>
 
             <button
@@ -736,6 +774,7 @@ export const CeoStaffManagement: React.FC<CeoStaffManagementProps> = ({
           const hasAddRest = staff.permissions?.can_add_restaurants === true;
           const hasSetupRest = staff.permissions?.can_setup_restaurants === true;
           const hasDeleteRest = staff.permissions?.can_delete_restaurants === true;
+          const hasPartnerAccess = staff.permissions?.can_view_partners === true && staff.permissions?.can_edit_partners === true;
           const hasFullSuperAdmin = activeCount >= 25;
 
           return (
@@ -801,6 +840,11 @@ export const CeoStaffManagement: React.FC<CeoStaffManagementProps> = ({
                       <Trash2 className="w-3 h-3 text-rose-400" /> Delete Allowed
                     </span>
                   )}
+                  {hasPartnerAccess && (
+                    <span className="px-2.5 py-1 rounded-xl bg-amber-950/60 border border-amber-500/40 text-[10px] font-bold text-amber-300 flex items-center gap-1">
+                      <Users className="w-3.5 h-3.5 text-amber-400" /> Partner Manager (পার্টনার কমিশন)
+                    </span>
+                  )}
                 </div>
 
                 {/* Quick 1-Click Action: Grant All Restaurant Permissions */}
@@ -813,6 +857,30 @@ export const CeoStaffManagement: React.FC<CeoStaffManagementProps> = ({
                   >
                     <Building2 className="w-3.5 h-3.5 text-emerald-400" />
                     Grant All Restaurant Permissions (1-Click)
+                  </button>
+                )}
+
+                {/* Quick 1-Click Action: Grant Partner Permissions */}
+                {!hasPartnerAccess && userCanEdit && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const mergedPerms: CeoStaffPermissions = {
+                          ...(staff.permissions || {}),
+                          ...PARTNER_PRESET
+                        };
+                        await updateCeoStaffMember(staff.id, { permissions: mergedPerms });
+                        showToast(`✅ Partner Manager permissions granted to ${staff.name}!`, 'success');
+                      } catch (e: any) {
+                        showToast(`Error updating permissions: ${e.message}`, 'error');
+                      }
+                    }}
+                    className="w-full py-2 px-3 rounded-xl bg-amber-950/80 hover:bg-amber-900 text-amber-300 font-bold text-xs border border-amber-500/40 flex items-center justify-center gap-1.5 transition-all shadow-sm cursor-pointer"
+                    title="Enable Partner Commission Access in 1-Click"
+                  >
+                    <Users className="w-3.5 h-3.5 text-amber-400" />
+                    Grant Partner Manager Access (পার্টনার কমিশন)
                   </button>
                 )}
 
@@ -989,6 +1057,7 @@ export const CeoStaffManagement: React.FC<CeoStaffManagementProps> = ({
                     <option value="manager">CEO Operations Manager</option>
                     <option value="support">Customer Support Lead</option>
                     <option value="billing">Billing & Subscription Manager</option>
+                    <option value="partner">Partner Commission Lead</option>
                   </select>
                 </div>
               </div>
@@ -1075,6 +1144,7 @@ export const CeoStaffManagement: React.FC<CeoStaffManagementProps> = ({
                     <option value="manager">CEO Operations Manager</option>
                     <option value="support">Customer Support Lead</option>
                     <option value="billing">Billing & Subscription Manager</option>
+                    <option value="partner">Partner Commission Lead</option>
                   </select>
                 </div>
               </div>
