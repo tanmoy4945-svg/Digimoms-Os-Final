@@ -787,6 +787,15 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
             // Primary source of truth: dbExt (from Supabase DB), complemented by server disk configs and local storage
             const serverRest = (activeRestId === r.id && activeRestConfig) ? activeRestConfig : (serverRestConfigs[r.id] || {});
             const localRest = localOverrides[r.id] || {};
+            
+            // Strictly strip lifecycle and security keys from extension objects so they NEVER overwrite DB truth
+            const STRIP_LIFECYCLE = ['status', 'subscription_start', 'subscription_end', 'trial_start', 'trial_end', 'trial_status', 'free_offer_start', 'free_offer_end', 'free_offer_status', 'password_hash'];
+            STRIP_LIFECYCLE.forEach(k => {
+              delete dbExt[k];
+              delete localRest[k];
+              delete serverRest[k];
+            });
+
             const ov: Record<string, any> = { ...serverRest, ...localRest, ...dbExt };
 
             // Helper to resolve booleans strictly (preserving explicit false values)
@@ -814,11 +823,20 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
             return {
               ...r,
+              // Strictly guarantee canonical Supabase database status and subscription dates are preserved
+              status: r.status,
+              subscription_start: r.subscription_start,
+              subscription_end: r.subscription_end,
+              trial_start: r.trial_start,
+              trial_end: r.trial_end,
+              trial_status: r.trial_status || 'off',
+              free_offer_start: r.free_offer_start,
+              free_offer_end: r.free_offer_end,
+              free_offer_status: r.free_offer_status || 'off',
               custom_domain: r.custom_domain || dbExt.custom_domain || localRest.custom_domain || '',
               custom_domain_verified: r.custom_domain_verified !== undefined ? Boolean(r.custom_domain_verified) : Boolean(dbExt.custom_domain_verified || false),
               monthly_subscription_fee: ov.monthly_subscription_fee ?? r.monthly_subscription_fee ?? 999,
               trial_days: ov.trial_days ?? r.trial_days ?? 0,
-              trial_status: ov.trial_status ?? r.trial_status ?? 'off',
               contact_mobile: ov.contact_mobile ?? r.contact_mobile ?? r.owner_mobile ?? '',
               enable_gst: enableGst,
               gst_percentage: ov.gst_percentage !== undefined ? Number(ov.gst_percentage) : (r.gst_percentage ?? 5),
@@ -871,10 +889,7 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
               shipping_delivery_policy: ov.shipping_delivery_policy !== undefined ? ov.shipping_delivery_policy : (r.shipping_delivery_policy || ''),
               contact_us_info: ov.contact_us_info !== undefined ? ov.contact_us_info : (r.contact_us_info || ''),
               website_config: ov.website_config !== undefined ? ov.website_config : (r.website_config || undefined),
-              free_offer_status: ov.free_offer_status !== undefined ? ov.free_offer_status : (r.free_offer_status || 'off'),
               free_offer_days: ov.free_offer_days !== undefined ? Number(ov.free_offer_days) : (r.free_offer_days ?? 0),
-              free_offer_start: ov.free_offer_start !== undefined ? ov.free_offer_start : (r.free_offer_start || ''),
-              free_offer_end: ov.free_offer_end !== undefined ? ov.free_offer_end : (r.free_offer_end || ''),
               free_offer_granted_by: ov.free_offer_granted_by !== undefined ? ov.free_offer_granted_by : (r.free_offer_granted_by || ''),
               partner_mobile: ov.partner_mobile !== undefined ? ov.partner_mobile : (r.partner_mobile || ''),
               partner_commission_amount: ov.partner_commission_amount !== undefined ? Number(ov.partner_commission_amount) : (r.partner_commission_amount ?? 0),
@@ -3112,8 +3127,16 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const dbUpdates = sanitizeRestaurantForDb(updates);
     const nowIso = new Date().toISOString();
 
-    // 1. Retrieve full existing record from in-memory state or local overrides
-    const existingRest = restaurants.find(r => r.id === id);
+    // 1. Retrieve authoritative live database record from Supabase
+    let dbRest: any = null;
+    try {
+      const { data } = await supabase.from('restaurants').select('*').eq('id', id).maybeSingle();
+      if (data) dbRest = data;
+    } catch (e) {
+      console.warn("Could not fetch live restaurant from Supabase:", e);
+    }
+
+    const existingRest = dbRest || restaurants.find(r => r.id === id) || (currentOwner?.id === id ? currentOwner : null);
     let existingExt: Record<string, any> = {};
     let cleanSecret = updates.razorpay_secret;
 
@@ -3137,6 +3160,15 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (parsed[id]) existingExt = { ...parsed[id], ...existingExt };
       }
     } catch (e) {}
+
+    // Strictly strip lifecycle and security keys from extension objects so they NEVER overwrite DB truth
+    const LIFECYCLE_KEYS = [
+      'status', 'subscription_start', 'subscription_end',
+      'trial_start', 'trial_end', 'trial_status',
+      'free_offer_start', 'free_offer_end', 'free_offer_status',
+      'password_hash', 'id', 'name', 'slug', 'owner_name', 'owner_mobile'
+    ];
+    LIFECYCLE_KEYS.forEach(k => delete existingExt[k]);
 
     // Form authoritative merged extended payload
     const mergedExt = {
@@ -3180,6 +3212,11 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
       ...updates
     };
 
+    // Guarantee extension bundle does NOT store lifecycle status
+    LIFECYCLE_KEYS.forEach(k => {
+      delete (mergedExt as any)[k];
+    });
+
     const CORE_COLUMNS = new Set([
       'id', 'name', 'slug', 'owner_name', 'owner_mobile', 'password_hash',
       'logo', 'banner', 'address', 'gst', 'fssai', 'business_hours',
@@ -3197,8 +3234,18 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (updates.payment_mode) coreUpdates.payment_mode = updates.payment_mode;
     if (updates.razorpay_key !== undefined) coreUpdates.razorpay_key = updates.razorpay_key;
 
+    // Strictly ensure coreUpdates does NOT modify lifecycle columns unless caller explicitly provided them
+    if (updates.status === undefined) delete coreUpdates.status;
+    if (updates.subscription_end === undefined) delete coreUpdates.subscription_end;
+    if (updates.subscription_start === undefined) delete coreUpdates.subscription_start;
+    if (updates.trial_start === undefined) delete coreUpdates.trial_start;
+    if (updates.trial_end === undefined) delete coreUpdates.trial_end;
+
     // Security Isolation: Scrub sensitive payment secrets/salts so they NEVER enter Supabase public columns or LocalStorage
     const safeExt = sanitizeSensitiveCredentials(mergedExt);
+    LIFECYCLE_KEYS.forEach(k => {
+      delete (safeExt as any)[k];
+    });
 
     // Pack ONLY safe operational fields into razorpay_secret as JSON bundle for permanent Supabase persistence
     try {
@@ -3249,11 +3296,59 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.warn(`Could not persist restaurant ${id} config to server API:`, err);
     }
 
-    // 5. Update React context state array and currentOwner so UI updates immediately
+    // 5. Authoritatively resolve lifecycle state from live Supabase record
+    const effectiveStatus = updates.status !== undefined
+      ? updates.status
+      : (dbRest?.status || (currentOwner?.id === id ? currentOwner.status : null) || existingRest?.status || 'active');
+
+    const effectiveSubEnd = updates.subscription_end !== undefined
+      ? updates.subscription_end
+      : (dbRest?.subscription_end || (currentOwner?.id === id ? currentOwner.subscription_end : null) || existingRest?.subscription_end || nowIso);
+
+    const effectiveSubStart = updates.subscription_start !== undefined
+      ? updates.subscription_start
+      : (dbRest?.subscription_start || (currentOwner?.id === id ? currentOwner.subscription_start : null) || existingRest?.subscription_start || nowIso);
+
+    const effectiveTrialStart = updates.trial_start !== undefined
+      ? updates.trial_start
+      : (dbRest?.trial_start ?? (currentOwner?.id === id ? currentOwner.trial_start : null) ?? existingRest?.trial_start);
+
+    const effectiveTrialEnd = updates.trial_end !== undefined
+      ? updates.trial_end
+      : (dbRest?.trial_end ?? (currentOwner?.id === id ? currentOwner.trial_end : null) ?? existingRest?.trial_end);
+
+    const effectiveTrialStatus = updates.trial_status !== undefined
+      ? updates.trial_status
+      : (dbRest?.trial_status || (currentOwner?.id === id ? currentOwner.trial_status : null) || existingRest?.trial_status || 'off');
+
+    const effectiveFreeStart = updates.free_offer_start !== undefined
+      ? updates.free_offer_start
+      : (dbRest?.free_offer_start ?? (currentOwner?.id === id ? currentOwner.free_offer_start : null) ?? existingRest?.free_offer_start);
+
+    const effectiveFreeEnd = updates.free_offer_end !== undefined
+      ? updates.free_offer_end
+      : (dbRest?.free_offer_end ?? (currentOwner?.id === id ? currentOwner.free_offer_end : null) ?? existingRest?.free_offer_end);
+
+    const effectiveFreeStatus = updates.free_offer_status !== undefined
+      ? updates.free_offer_status
+      : (dbRest?.free_offer_status || (currentOwner?.id === id ? currentOwner.free_offer_status : null) || existingRest?.free_offer_status || 'off');
+
+    // Update React context state array and currentOwner so UI updates immediately
     const updatedFullObj: Restaurant = {
       ...(existingRest || {}),
+      ...(dbRest || {}),
       ...mergedExt,
       id,
+      status: effectiveStatus,
+      subscription_start: effectiveSubStart,
+      subscription_end: effectiveSubEnd,
+      trial_start: effectiveTrialStart,
+      trial_end: effectiveTrialEnd,
+      trial_status: effectiveTrialStatus,
+      free_offer_start: effectiveFreeStart,
+      free_offer_end: effectiveFreeEnd,
+      free_offer_status: effectiveFreeStatus,
+      password_hash: updates.password_hash !== undefined ? updates.password_hash : (dbRest?.password_hash || existingRest?.password_hash),
       updated_at: nowIso
     } as Restaurant;
 
@@ -3266,8 +3361,8 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
       localStorage.setItem('digimoms_current_owner', JSON.stringify(safeOwner));
     }
 
-    // 6. Background synchronization to verify all layers
-    fetchAllFromSupabase().catch(e => console.warn("fetchAllFromSupabase sync error:", e));
+    // 6. Force immediate background synchronization to verify all layers without throttle
+    await fetchAllFromSupabase(true).catch(e => console.warn("fetchAllFromSupabase sync error:", e));
     showToast('Restaurant details updated and saved successfully!', 'success');
   };
 
@@ -3398,7 +3493,15 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
     await addSubscriptionHistoryRecord(historyRecord);
 
-    fetchAllFromSupabase().catch(e => console.error("BG fetch error:", e));
+    setRestaurants(prev => prev.map(r => r.id === id ? { ...r, trial_start: trialStart, trial_end: trialEnd, status: 'trial' } : r));
+    if (currentOwner && currentOwner.id === id) {
+      const updated = { ...currentOwner, trial_start: trialStart, trial_end: trialEnd, status: 'trial' as const };
+      setCurrentOwner(updated);
+      sessionStorage.setItem('digimoms_current_owner', JSON.stringify(updated));
+      localStorage.setItem('digimoms_current_owner', JSON.stringify(updated));
+    }
+
+    await fetchAllFromSupabase(true).catch(e => console.error("BG fetch error:", e));
     showToast(`Granted ${days}-day trial to '${rest.name}'!`, 'success');
   };
 
@@ -3413,7 +3516,15 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
       updated_at: nowIso
     })).eq('id', id);
 
-    fetchAllFromSupabase().catch(e => console.error("BG fetch error:", e));
+    setRestaurants(prev => prev.map(r => r.id === id ? { ...r, trial_end: nowIso, status: 'inactive' } : r));
+    if (currentOwner && currentOwner.id === id) {
+      const updated = { ...currentOwner, trial_end: nowIso, status: 'inactive' as const };
+      setCurrentOwner(updated);
+      sessionStorage.setItem('digimoms_current_owner', JSON.stringify(updated));
+      localStorage.setItem('digimoms_current_owner', JSON.stringify(updated));
+    }
+
+    await fetchAllFromSupabase(true).catch(e => console.error("BG fetch error:", e));
     showToast(`Trial ended for '${rest.name}'.`, 'info');
   };
 
@@ -3430,7 +3541,15 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
       updated_at: new Date().toISOString()
     })).eq('id', id);
 
-    fetchAllFromSupabase().catch(e => console.error("BG fetch error:", e));
+    setRestaurants(prev => prev.map(r => r.id === id ? { ...r, trial_end: newEnd, status: 'trial' } : r));
+    if (currentOwner && currentOwner.id === id) {
+      const updated = { ...currentOwner, trial_end: newEnd, status: 'trial' as const };
+      setCurrentOwner(updated);
+      sessionStorage.setItem('digimoms_current_owner', JSON.stringify(updated));
+      localStorage.setItem('digimoms_current_owner', JSON.stringify(updated));
+    }
+
+    await fetchAllFromSupabase(true).catch(e => console.error("BG fetch error:", e));
     showToast(`Trial extended by ${days} days.`, 'success');
   };
 
@@ -3469,7 +3588,15 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
     await addSubscriptionHistoryRecord(historyRecord);
 
-    fetchAllFromSupabase().catch(e => console.error("BG fetch error:", e));
+    setRestaurants(prev => prev.map(r => r.id === id ? { ...r, subscription_end: offerEnd, status: 'active' } : r));
+    if (currentOwner && currentOwner.id === id) {
+      const updated = { ...currentOwner, subscription_end: offerEnd, status: 'active' as const };
+      setCurrentOwner(updated);
+      sessionStorage.setItem('digimoms_current_owner', JSON.stringify(updated));
+      localStorage.setItem('digimoms_current_owner', JSON.stringify(updated));
+    }
+
+    await fetchAllFromSupabase(true).catch(e => console.error("BG fetch error:", e));
     showToast(`Granted ${days}-day Free Offer to '${rest.name}'!`, 'success');
   };
 
@@ -3484,7 +3611,15 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
       updated_at: nowIso
     })).eq('id', id);
 
-    fetchAllFromSupabase().catch(e => console.error("BG fetch error:", e));
+    setRestaurants(prev => prev.map(r => r.id === id ? { ...r, subscription_end: nowIso, status: 'inactive' } : r));
+    if (currentOwner && currentOwner.id === id) {
+      const updated = { ...currentOwner, subscription_end: nowIso, status: 'inactive' as const };
+      setCurrentOwner(updated);
+      sessionStorage.setItem('digimoms_current_owner', JSON.stringify(updated));
+      localStorage.setItem('digimoms_current_owner', JSON.stringify(updated));
+    }
+
+    await fetchAllFromSupabase(true).catch(e => console.error("BG fetch error:", e));
     showToast(`Free Offer ended for '${rest.name}'.`, 'info');
   };
 
@@ -3501,7 +3636,15 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
       updated_at: new Date().toISOString()
     })).eq('id', id);
 
-    fetchAllFromSupabase().catch(e => console.error("BG fetch error:", e));
+    setRestaurants(prev => prev.map(r => r.id === id ? { ...r, subscription_end: newEnd, status: 'active' } : r));
+    if (currentOwner && currentOwner.id === id) {
+      const updated = { ...currentOwner, subscription_end: newEnd, status: 'active' as const };
+      setCurrentOwner(updated);
+      sessionStorage.setItem('digimoms_current_owner', JSON.stringify(updated));
+      localStorage.setItem('digimoms_current_owner', JSON.stringify(updated));
+    }
+
+    await fetchAllFromSupabase(true).catch(e => console.error("BG fetch error:", e));
     showToast(`Free Offer extended by ${days} days for '${rest.name}'.`, 'success');
   };
 
@@ -3541,7 +3684,15 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
     await addSubscriptionHistoryRecord(historyRecord);
 
-    fetchAllFromSupabase().catch(e => console.error("BG fetch error:", e));
+    setRestaurants(prev => prev.map(r => r.id === id ? { ...r, subscription_end: newExpiry, status: 'active' } : r));
+    if (currentOwner && currentOwner.id === id) {
+      const updated = { ...currentOwner, subscription_end: newExpiry, status: 'active' as const };
+      setCurrentOwner(updated);
+      sessionStorage.setItem('digimoms_current_owner', JSON.stringify(updated));
+      localStorage.setItem('digimoms_current_owner', JSON.stringify(updated));
+    }
+
+    await fetchAllFromSupabase(true).catch(e => console.error("BG fetch error:", e));
     showToast(`Granted +${extraDays} free days to '${rest.name}'! Expiry: ${new Date(newExpiry).toLocaleDateString()}`, 'success');
   };
 
@@ -3594,7 +3745,15 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
       description: `Granted ${days} free days to '${rest.name}'. Reason: ${reason}`
     });
 
-    fetchAllFromSupabase().catch(e => console.error("BG fetch error:", e));
+    setRestaurants(prev => prev.map(r => r.id === id ? { ...r, subscription_end: newExpiry, status: 'active' } : r));
+    if (currentOwner && currentOwner.id === id) {
+      const updated = { ...currentOwner, subscription_end: newExpiry, status: 'active' as const };
+      setCurrentOwner(updated);
+      sessionStorage.setItem('digimoms_current_owner', JSON.stringify(updated));
+      localStorage.setItem('digimoms_current_owner', JSON.stringify(updated));
+    }
+
+    await fetchAllFromSupabase(true).catch(e => console.error("BG fetch error:", e));
     showToast(`🎉 Granted ${days} Free Days to '${rest.name}'! (${reason})`, 'success');
   };
 
@@ -3664,6 +3823,13 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
+    // Sync restaurants list state immediately
+    setRestaurants(prev => prev.map(r => r.id === id ? {
+      ...r,
+      subscription_end: newSubEnd,
+      status: 'active'
+    } : r));
+
     // Sync currentOwner state immediately so Owner Dashboard re-renders with fresh expiry
     if (currentOwner && currentOwner.id === id) {
       const updatedCurrentOwner = {
@@ -3702,7 +3868,7 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     await addSubscriptionHistoryRecord(historyRecord);
 
-    fetchAllFromSupabase().catch(e => console.error("BG fetch error:", e));
+    await fetchAllFromSupabase(true).catch(e => console.error("BG fetch error:", e));
     showToast(`🎉 Monthly Subscription Paid (₹${feeAmount}) & Extended by ${months} Calendar Month!`, 'success');
   };
 
@@ -4007,7 +4173,21 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const updateOwnerProfile = async (updates: Partial<Restaurant>) => {
     if (!currentOwner) return;
-    await updateRestaurant(currentOwner.id, updates);
+    
+    // Explicitly prevent owner profile/settings saves from ever tampering with subscription lifecycle
+    const safeUpdates = { ...updates };
+    delete safeUpdates.status;
+    delete safeUpdates.subscription_start;
+    delete safeUpdates.subscription_end;
+    delete safeUpdates.trial_start;
+    delete safeUpdates.trial_end;
+    delete safeUpdates.trial_status;
+    delete safeUpdates.free_offer_start;
+    delete safeUpdates.free_offer_end;
+    delete safeUpdates.free_offer_status;
+    delete safeUpdates.password_hash;
+
+    await updateRestaurant(currentOwner.id, safeUpdates);
     logAudit({
       restaurant_id: currentOwner.id,
       actor_type: 'owner',
