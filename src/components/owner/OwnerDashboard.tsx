@@ -256,6 +256,7 @@ export const OwnerDashboard: React.FC = () => {
       if (verifyRes.ok && verifyData.verified) {
         // 3. Extend subscription by 1 calendar month in Supabase and record transaction
         await renewRestaurantMonthly(currentOwner.id, 1, {
+          amount: monthlyFee,
           transactionId: createData.merchantTransactionId,
           mode: createData.mode || ceoPaymentConfig?.mode || 'demo'
         });
@@ -323,6 +324,7 @@ export const OwnerDashboard: React.FC = () => {
       if (verifyRes.ok && verifyData.verified) {
         // 3. Extend subscription by 1 calendar month in Supabase and record transaction
         await renewRestaurantMonthly(currentOwner.id, 1, {
+          amount: monthlyFee,
           transactionId: createData.txnid,
           mode: createData.mode || ceoPaymentConfig?.mode || 'demo'
         });
@@ -389,6 +391,7 @@ export const OwnerDashboard: React.FC = () => {
             const verifyData = await verifyRes.json();
             if (verifyRes.ok && verifyData.verified) {
               await renewRestaurantMonthly(currentOwner.id, 1, {
+                amount: monthlyFee,
                 transactionId: response.razorpay_payment_id,
                 mode: 'live',
                 razorpay_order_id: response.razorpay_order_id,
@@ -413,6 +416,7 @@ export const OwnerDashboard: React.FC = () => {
       } else {
         // Simulated / Demo mode renewal
         await renewRestaurantMonthly(currentOwner.id, 1, {
+          amount: monthlyFee,
           transactionId: `rzp_demo_${Date.now()}`,
           mode: 'demo'
         });
@@ -1531,6 +1535,7 @@ export const OwnerDashboard: React.FC = () => {
         onClose={() => setShowPayUSubscriptionModal(false)}
         onSuccess={async (paymentData) => {
           await renewRestaurantMonthly(currentOwner.id, 1, {
+            amount: monthlyFee,
             transactionId: paymentData.txnid,
             mode: ceoPaymentConfig?.mode || 'demo'
           });
@@ -1557,6 +1562,7 @@ export const OwnerDashboard: React.FC = () => {
         onClose={() => setShowPhonePeSubscriptionModal(false)}
         onSuccess={async (paymentData) => {
           await renewRestaurantMonthly(currentOwner.id, 1, {
+            amount: monthlyFee,
             transactionId: paymentData.transactionId,
             mode: ceoPaymentConfig?.mode || 'demo'
           });
@@ -1584,6 +1590,7 @@ export const OwnerDashboard: React.FC = () => {
         onClose={() => setShowRazorpaySubscriptionModal(false)}
         onSuccess={async (paymentData) => {
           await renewRestaurantMonthly(currentOwner.id, 1, {
+            amount: monthlyFee,
             transactionId: paymentData.razorpay_payment_id,
             mode: 'live',
             razorpay_order_id: paymentData.razorpay_order_id,

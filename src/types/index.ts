@@ -106,6 +106,8 @@ export interface Restaurant {
   custom_domain_verified?: boolean;
   last_password_change?: string;
   partner_mobile?: string;
+  partner_commission_type?: 'percent' | 'flat';
+  partner_commission_percentage?: number;
   partner_commission_amount?: number;
   theme: string;
   language: Language;
@@ -449,6 +451,8 @@ export interface SubscriptionHistory {
   commission_status?: 'pending' | 'cleared';
   commission_cleared_at?: string;
   commission_cleared_by_mobile?: string;
+  commission_amount?: number;
+  commission_rate?: string;
   created_at: string;
 }
 

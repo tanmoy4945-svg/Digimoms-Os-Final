@@ -452,7 +452,9 @@ export const CeoDashboard: React.FC = () => {
         monthly_subscription_fee: Number(newRest.monthly_fee) || 999,
         trial_days: Number(newRest.trial_days) || 14,
         partner_mobile: newRest.partner_mobile || '',
-        partner_commission_amount: Number(newRest.partner_commission_amount) || 0
+        partner_commission_type: 'percent',
+        partner_commission_percentage: Number(newRest.partner_commission_amount) || 50,
+        partner_commission_amount: Number(newRest.partner_commission_amount) || 50
       });
 
       setNewRest({ 
@@ -529,7 +531,9 @@ export const CeoDashboard: React.FC = () => {
         subscription_start: editingRestaurant.subscription_start,
         subscription_end: editingRestaurant.subscription_end,
         partner_mobile: editingRestaurant.partner_mobile,
-        partner_commission_amount: Number(editingRestaurant.partner_commission_amount) || 0,
+        partner_commission_type: editingRestaurant.partner_commission_type || 'percent',
+        partner_commission_percentage: Number(editingRestaurant.partner_commission_percentage ?? editingRestaurant.partner_commission_amount) || 50,
+        partner_commission_amount: Number(editingRestaurant.partner_commission_percentage ?? editingRestaurant.partner_commission_amount) || 50,
         status: editingRestaurant.status
       });
       setEditingRestaurant(null);
@@ -1393,14 +1397,17 @@ export const CeoDashboard: React.FC = () => {
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] font-bold text-purple-300 uppercase mb-1">Commission Amount (₹)</label>
+                  <label className="block text-[10px] font-bold text-purple-300 uppercase mb-1">Partner Commission (% of Renewal)</label>
                   <input
                     type="number"
-                    placeholder="e.g. 200"
-                    value={newRest.partner_commission_amount}
+                    min="0"
+                    max="100"
+                    placeholder="e.g. 50"
+                    value={newRest.partner_commission_amount || 50}
                     onChange={(e) => setNewRest({ ...newRest, partner_commission_amount: Number(e.target.value) })}
                     className="w-full bg-slate-950 border border-purple-500/30 rounded-xl px-4 py-2 text-xs text-white outline-none"
                   />
+                  <p className="text-[10px] text-purple-400/80 mt-1">Calculates % of each renewal charge (e.g. 50% of ₹1 renewal = ₹0.50, 50% of ₹999 = ₹499.50)</p>
                 </div>
               </div>
 
@@ -1493,14 +1500,22 @@ export const CeoDashboard: React.FC = () => {
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] font-bold text-purple-300 uppercase mb-1">Commission Amount (₹)</label>
+                  <label className="block text-[10px] font-bold text-purple-300 uppercase mb-1">Partner Commission (% of Renewal)</label>
                   <input
                     type="number"
-                    placeholder="e.g. 200"
-                    value={editingRestaurant.partner_commission_amount || 0}
-                    onChange={(e) => setEditingRestaurant({ ...editingRestaurant, partner_commission_amount: Number(e.target.value) })}
+                    min="0"
+                    max="100"
+                    placeholder="e.g. 50"
+                    value={editingRestaurant.partner_commission_percentage !== undefined ? editingRestaurant.partner_commission_percentage : (editingRestaurant.partner_commission_amount ?? 50)}
+                    onChange={(e) => setEditingRestaurant({ 
+                      ...editingRestaurant, 
+                      partner_commission_percentage: Number(e.target.value),
+                      partner_commission_amount: Number(e.target.value),
+                      partner_commission_type: 'percent'
+                    })}
                     className="w-full bg-slate-950 border border-purple-500/30 rounded-xl px-4 py-2 text-xs text-white outline-none"
                   />
+                  <p className="text-[10px] text-purple-400/80 mt-1">Calculates % of each renewal charge (e.g. 50% of ₹1 renewal = ₹0.50, 50% of ₹999 = ₹499.50)</p>
                 </div>
               </div>
 

@@ -133,13 +133,13 @@ interface SaaSContextType {
   grantFreePlan: (id: string, days: number, reason: string) => Promise<void>;
   grantFreeDays: (id: string, days: number, reason: string, purposeType?: string) => Promise<void>;
   renewSubscription: (id: string, months: number) => Promise<void>;
-  renewRestaurantMonthly: (id: string, months?: number, paymentDetails?: { transactionId?: string; mode?: string; razorpay_order_id?: string; razorpay_payment_id?: string; razorpay_signature?: string; payu_txnid?: string; payu_mihpayid?: string; payu_hash?: string }) => Promise<void>;
+  renewRestaurantMonthly: (id: string, months?: number, paymentDetails?: { amount?: number; transactionId?: string; mode?: string; razorpay_order_id?: string; razorpay_payment_id?: string; razorpay_signature?: string; payu_txnid?: string; payu_mihpayid?: string; payu_hash?: string }) => Promise<void>;
   archiveRestaurant: (id: string) => Promise<void>;
   deleteRestaurantPermanently: (id: string) => Promise<void>;
   deleteOldRestaurantData: (id: string, duration: '6m' | '1y') => Promise<number>;
   factoryResetRestaurant: (id: string, ceoPass: string) => Promise<boolean>;
   executeProductionReset: (ceoPassword?: string) => Promise<boolean>;
-  updateCommissionStatus: (historyId: string, status: 'pending' | 'cleared', clearedByMobile: string) => Promise<void>;
+  updateCommissionStatus: (historyId: string, status: 'pending' | 'cleared', clearedByMobile: string, commissionAmount?: number, commissionRate?: string) => Promise<void>;
 
   // Owner Actions
   loginOwner: (mobile: string, pass: string, rememberMe?: boolean) => Restaurant | null;
@@ -895,7 +895,9 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
               free_offer_days: ov.free_offer_days !== undefined ? Number(ov.free_offer_days) : (r.free_offer_days ?? 0),
               free_offer_granted_by: ov.free_offer_granted_by !== undefined ? ov.free_offer_granted_by : (r.free_offer_granted_by || ''),
               partner_mobile: ov.partner_mobile !== undefined ? ov.partner_mobile : (r.partner_mobile || ''),
-              partner_commission_amount: ov.partner_commission_amount !== undefined ? Number(ov.partner_commission_amount) : (r.partner_commission_amount ?? 0),
+              partner_commission_type: ov.partner_commission_type !== undefined ? ov.partner_commission_type : (r.partner_commission_type || 'percent'),
+              partner_commission_percentage: ov.partner_commission_percentage !== undefined ? Number(ov.partner_commission_percentage) : (r.partner_commission_percentage !== undefined ? Number(r.partner_commission_percentage) : 50),
+              partner_commission_amount: ov.partner_commission_amount !== undefined ? Number(ov.partner_commission_amount) : (r.partner_commission_amount ?? 50),
               last_password_change: ov.last_password_change !== undefined ? ov.last_password_change : (r.last_password_change || '')
             };
           });
@@ -1168,6 +1170,8 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
           let commission_status = item.commission_status;
           let commission_cleared_at = item.commission_cleared_at;
           let commission_cleared_by_mobile = item.commission_cleared_by_mobile;
+          let commission_amount = item.commission_amount !== undefined ? Number(item.commission_amount) : undefined;
+          let commission_rate = item.commission_rate;
 
           // Check if reason contains packed JSON
           if (item.reason && typeof item.reason === 'string' && item.reason.startsWith('{') && item.reason.includes('commission_status')) {
@@ -1176,6 +1180,10 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
               if (parsedReason.commission_status) commission_status = parsedReason.commission_status;
               if (parsedReason.commission_cleared_at) commission_cleared_at = parsedReason.commission_cleared_at;
               if (parsedReason.commission_cleared_by_mobile) commission_cleared_by_mobile = parsedReason.commission_cleared_by_mobile;
+              if (parsedReason.commission_amount !== undefined && parsedReason.commission_amount !== null) {
+                commission_amount = Number(parsedReason.commission_amount);
+              }
+              if (parsedReason.commission_rate) commission_rate = parsedReason.commission_rate;
             } catch {}
           }
 
@@ -1185,6 +1193,8 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
             commission_status = existingLocal.commission_status;
             commission_cleared_at = existingLocal.commission_cleared_at;
             commission_cleared_by_mobile = existingLocal.commission_cleared_by_mobile;
+            if (commission_amount === undefined) commission_amount = existingLocal.commission_amount;
+            if (!commission_rate) commission_rate = existingLocal.commission_rate;
           }
 
           // If still undefined, but restaurant has a partner assigned, and this is a renewal record, default to pending
@@ -1202,7 +1212,9 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
             ...item,
             commission_status,
             commission_cleared_at,
-            commission_cleared_by_mobile
+            commission_cleared_by_mobile,
+            commission_amount,
+            commission_rate
           } as SubscriptionHistory);
         });
       }
@@ -2994,7 +3006,9 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
       free_offer_start: nowIso,
       free_offer_end: nowIso,
       partner_mobile: newRest.partner_mobile || '',
-      partner_commission_amount: newRest.partner_commission_amount || 0,
+      partner_commission_type: newRest.partner_commission_type || 'percent',
+      partner_commission_percentage: newRest.partner_commission_percentage !== undefined ? Number(newRest.partner_commission_percentage) : (newRest.partner_commission_amount || 50),
+      partner_commission_amount: newRest.partner_commission_amount || 50,
       subscription_start: nowIso,
       subscription_end: nowIso,
       theme: 'dark-glass',
@@ -3032,6 +3046,8 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
       razorpay_secret: JSON.stringify({
         _ext: {
           partner_mobile: created.partner_mobile,
+          partner_commission_type: created.partner_commission_type,
+          partner_commission_percentage: created.partner_commission_percentage,
           partner_commission_amount: created.partner_commission_amount,
           monthly_subscription_fee: created.monthly_subscription_fee,
           contact_mobile: created.contact_mobile,
@@ -3847,6 +3863,7 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
     id: string,
     months: number = 1,
     paymentDetails?: {
+      amount?: number;
       transactionId?: string;
       mode?: string;
       razorpay_order_id?: string;
@@ -3910,8 +3927,10 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
       localStorage.setItem('digimoms_current_owner', JSON.stringify(updatedCurrentOwner));
     }
 
-    // Insert lifetime history entry with restaurant's monthly subscription fee
-    const feeAmount = rest.monthly_subscription_fee || 999;
+    // Use actual paid renewal amount or restaurant's configured monthly subscription fee
+    const feeAmount = (paymentDetails?.amount !== undefined && paymentDetails.amount !== null && !isNaN(Number(paymentDetails.amount)) && Number(paymentDetails.amount) > 0)
+      ? Number(paymentDetails.amount)
+      : (Number(rest.monthly_subscription_fee) || 999);
     const historyRecord: SubscriptionHistory = {
       id: crypto.randomUUID(),
       restaurant_id: id,
@@ -3940,7 +3959,13 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
     showToast(`🎉 Monthly Subscription Paid (₹${feeAmount}) & Extended by ${months} Calendar Month!`, 'success');
   };
 
-  const updateCommissionStatus = async (historyId: string, status: 'pending' | 'cleared', clearedByMobile: string) => {
+  const updateCommissionStatus = async (
+    historyId: string, 
+    status: 'pending' | 'cleared', 
+    clearedByMobile: string,
+    commissionAmount?: number,
+    commissionRate?: string
+  ) => {
     const now = new Date().toISOString();
     
     // 1. Local update
@@ -3949,7 +3974,9 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
         ...s,
         commission_status: status,
         commission_cleared_at: status === 'cleared' ? now : undefined,
-        commission_cleared_by_mobile: status === 'cleared' ? clearedByMobile : undefined
+        commission_cleared_by_mobile: status === 'cleared' ? clearedByMobile : undefined,
+        commission_amount: status === 'cleared' ? (commissionAmount !== undefined ? commissionAmount : s.commission_amount) : undefined,
+        commission_rate: status === 'cleared' ? (commissionRate || s.commission_rate) : undefined
       } : s);
       try {
         localStorage.setItem('digimoms_subscription_history', JSON.stringify(updated));
@@ -3957,7 +3984,7 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return updated;
     });
 
-    // Prepare packed reason so status persists across sessions in Supabase
+    // Prepare packed reason so status and snapshot persist across sessions in Supabase
     const existingRecord = subscriptionHistory.find(s => s.id === historyId);
     let rObj: any = {};
     if (existingRecord?.reason) {
@@ -3970,6 +3997,13 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
     rObj.commission_status = status;
     rObj.commission_cleared_at = status === 'cleared' ? now : null;
     rObj.commission_cleared_by_mobile = status === 'cleared' ? clearedByMobile : null;
+    if (status === 'cleared') {
+      rObj.commission_amount = commissionAmount !== undefined ? commissionAmount : (existingRecord?.commission_amount ?? null);
+      rObj.commission_rate = commissionRate || existingRecord?.commission_rate || null;
+    } else {
+      delete rObj.commission_amount;
+      delete rObj.commission_rate;
+    }
     const packedReason = JSON.stringify(rObj);
 
     // 2. Persist to DB (attempts direct columns and reason column)
