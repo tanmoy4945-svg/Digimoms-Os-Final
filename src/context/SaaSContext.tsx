@@ -1110,10 +1110,19 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
         } catch {}
       }
 
-      // Generate baseline history for restaurants having trial/subscription if no history records exist
+      // Generate baseline history for restaurants having trial/subscription ONLY if no real history records exist in Supabase
       const synthesizedHist: SubscriptionHistory[] = [];
+      const restaurantsWithRealHistory = new Set(
+        (Array.isArray(subHistData) ? subHistData : [])
+          .filter((h: any) => h.restaurant_id)
+          .map((h: any) => h.restaurant_id)
+      );
+
       (restData || []).forEach((r: any) => {
         if (!r.id || r.id === '00000000-0000-0000-0000-000000000000') return;
+        // Never synthesize phantom records if this restaurant already has real lifetime history in Supabase!
+        if (restaurantsWithRealHistory.has(r.id)) return;
+
         if (r.trial_start || r.trial_end) {
           synthesizedHist.push({
             id: `synth-trial-${r.id}`,
@@ -1159,13 +1168,13 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
 
       const histMap = new Map<string, SubscriptionHistory>();
-      // 1. Synthesized base entries
+      // 1. Synthesized base entries (for restaurants with zero records in DB)
       synthesizedHist.forEach(item => histMap.set(item.id, item));
       // 2. Overlay local storage entries
       localHistory.forEach(item => histMap.set(item.id, item));
-      // 3. Overlay Supabase entries (canonical truth)
+      // 3. Overlay Supabase entries (authoritative canonical truth)
       if (Array.isArray(subHistData)) {
-        const restMap = new Map<string, any>((restData || []).map((r: any) => [r.id, r]));
+        const restMap = new Map<string, any>((mergedRestaurants || []).map((r: any) => [r.id, r]));
         subHistData.forEach((item: any) => {
           let commission_status = item.commission_status;
           let commission_cleared_at = item.commission_cleared_at;
@@ -1173,18 +1182,21 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
           let commission_amount = item.commission_amount !== undefined ? Number(item.commission_amount) : undefined;
           let commission_rate = item.commission_rate;
 
-          // Check if reason contains packed JSON
-          if (item.reason && typeof item.reason === 'string' && item.reason.startsWith('{') && item.reason.includes('commission_status')) {
-            try {
-              const parsedReason = JSON.parse(item.reason);
-              if (parsedReason.commission_status) commission_status = parsedReason.commission_status;
-              if (parsedReason.commission_cleared_at) commission_cleared_at = parsedReason.commission_cleared_at;
-              if (parsedReason.commission_cleared_by_mobile) commission_cleared_by_mobile = parsedReason.commission_cleared_by_mobile;
-              if (parsedReason.commission_amount !== undefined && parsedReason.commission_amount !== null) {
-                commission_amount = Number(parsedReason.commission_amount);
-              }
-              if (parsedReason.commission_rate) commission_rate = parsedReason.commission_rate;
-            } catch {}
+          // Check if reason contains packed JSON snapshot
+          if (item.reason && typeof item.reason === 'string') {
+            const trimmedReason = item.reason.trim();
+            if (trimmedReason.startsWith('{')) {
+              try {
+                const parsedReason = JSON.parse(trimmedReason);
+                if (parsedReason.commission_status) commission_status = parsedReason.commission_status;
+                if (parsedReason.commission_cleared_at) commission_cleared_at = parsedReason.commission_cleared_at;
+                if (parsedReason.commission_cleared_by_mobile) commission_cleared_by_mobile = parsedReason.commission_cleared_by_mobile;
+                if (parsedReason.commission_amount !== undefined && parsedReason.commission_amount !== null) {
+                  commission_amount = Number(parsedReason.commission_amount);
+                }
+                if (parsedReason.commission_rate) commission_rate = parsedReason.commission_rate;
+              } catch {}
+            }
           }
 
           // If still undefined, check if local storage had a value
@@ -4006,20 +4018,57 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     const packedReason = JSON.stringify(rObj);
 
-    // 2. Persist to DB (attempts direct columns and reason column)
+    // 2. Persist to DB directly using reason packed payload and ensure synthetic records are permanently inserted
     try {
-      const { error } = await supabase.from('subscription_history').update({
-        commission_status: status,
-        commission_cleared_at: status === 'cleared' ? now : null,
-        commission_cleared_by_mobile: status === 'cleared' ? clearedByMobile : null,
-        reason: packedReason
-      }).eq('id', historyId);
+      let updatedInDb = false;
 
-      if (error) {
-        // Fallback: update only reason if commission_status columns do not exist
-        await supabase.from('subscription_history').update({
-          reason: packedReason
-        }).eq('id', historyId);
+      // If it's a real database record, update it directly
+      if (!historyId.startsWith('synth-')) {
+        const { data: updateRes, error: updateErr } = await supabase
+          .from('subscription_history')
+          .update({ reason: packedReason })
+          .eq('id', historyId)
+          .select('id');
+
+        if (!updateErr && updateRes && updateRes.length > 0) {
+          updatedInDb = true;
+        }
+      }
+
+      // If row was synthetic or not found in DB, insert it permanently into Supabase!
+      if (!updatedInDb && existingRecord) {
+        const permanentId = historyId.startsWith('synth-') ? crypto.randomUUID() : historyId;
+        const insertPayload = {
+          id: permanentId,
+          restaurant_id: existingRecord.restaurant_id,
+          plan_name: existingRecord.plan_name || 'Monthly Standard Subscription',
+          amount: Number(existingRecord.amount || 0),
+          amount_paid: Number(existingRecord.amount_paid || existingRecord.amount || 0),
+          duration_months: Number(existingRecord.duration_months || 1),
+          days_added: Number(existingRecord.days_added || 30),
+          payment_id: existingRecord.payment_id || `COMM_TX_${Date.now()}`,
+          start_date: existingRecord.start_date || now,
+          end_date: existingRecord.end_date || now,
+          previous_expiry: existingRecord.previous_expiry || now,
+          new_expiry: existingRecord.new_expiry || now,
+          payment_status: 'paid',
+          payment_mode: 'live',
+          subscription_type: 'RENEWAL',
+          granted_by: `Admin (${clearedByMobile})`,
+          reason: packedReason,
+          created_at: existingRecord.created_at || now
+        };
+
+        const { error: insErr } = await supabase.from('subscription_history').insert(insertPayload);
+        if (!insErr && historyId.startsWith('synth-')) {
+          setSubscriptionHistory(prev => {
+            const remapped = prev.map(s => s.id === historyId ? { ...s, id: permanentId } : s);
+            try {
+              localStorage.setItem('digimoms_subscription_history', JSON.stringify(remapped));
+            } catch {}
+            return remapped;
+          });
+        }
       }
     } catch (err) {
       console.warn("Could not update commission status in DB:", err);

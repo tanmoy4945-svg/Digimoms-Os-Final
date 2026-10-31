@@ -174,6 +174,9 @@ export const CeoPartnerCommissions: React.FC<CeoPartnerCommissionsProps> = ({
     const rest = restaurants.find(r => r.id === restId);
     const history = subscriptionHistory.filter(h => {
       if (h.restaurant_id !== restId) return false;
+      if (h.id.startsWith('synth-') && subscriptionHistory.some(s => s.restaurant_id === restId && !s.id.startsWith('synth-'))) {
+        return false;
+      }
       return (
         h.subscription_type === 'RENEWAL' ||
         h.plan_name?.toLowerCase().includes('renewal') ||
@@ -487,6 +490,9 @@ export const CeoPartnerCommissions: React.FC<CeoPartnerCommissionsProps> = ({
                       {subscriptionHistory
                         .filter(h => {
                           if (h.restaurant_id !== viewDetails.id) return false;
+                          if (h.id.startsWith('synth-') && subscriptionHistory.some(s => s.restaurant_id === viewDetails.id && !s.id.startsWith('synth-'))) {
+                            return false;
+                          }
                           const isRenewal = (h.subscription_type && h.subscription_type.toUpperCase() === 'RENEWAL') ||
                             (h.plan_name && (h.plan_name.toLowerCase().includes('renewal') || h.plan_name.toLowerCase().includes('monthly') || h.plan_name.toLowerCase().includes('standard') || h.plan_name.toLowerCase().includes('advance') || h.plan_name.toLowerCase().includes('pro'))) ||
                             ((h.amount || h.amount_paid || 0) > 0) ||
