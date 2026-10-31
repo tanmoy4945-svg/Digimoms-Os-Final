@@ -17,7 +17,6 @@ import { supabase } from '../lib/supabase';
 import { normalizeImageUrl } from '../utils/imageUrl';
 import { registerServiceWorker, triggerSystemNotification } from '../utils/notificationService';
 import { safeFetchJson } from '../lib/safeFetch';
-import { sanitizeSensitiveCredentials } from '../utils/productionSafety';
 import { getRestaurantSubscriptionDetails } from '../utils/subscriptionUtils';
 
 export type ActiveView = 
@@ -769,18 +768,21 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
           .filter((r: any) => r.id !== MASTER_CEO_CONFIG_ID && r.status !== 'system_internal' && r.slug !== 'system-ceo-master-config')
           .map((r: any) => {
             let dbExt: Record<string, any> = {};
-            let cleanRazorpaySecret = r.razorpay_secret || '';
+            let cleanRazorpaySecret = '';
 
-            if (r.razorpay_secret && typeof r.razorpay_secret === 'string' && r.razorpay_secret.trim().startsWith('{')) {
-              try {
-                const parsedSecret = JSON.parse(r.razorpay_secret);
-                if (parsedSecret && typeof parsedSecret === 'object') {
-                  if (parsedSecret._ext) dbExt = parsedSecret._ext;
-                  if (parsedSecret.secret !== undefined) cleanRazorpaySecret = parsedSecret.secret;
-                  else if (parsedSecret._ext?.razorpay_secret !== undefined) cleanRazorpaySecret = parsedSecret._ext.razorpay_secret;
-                }
-              } catch (e) {
-                cleanRazorpaySecret = r.razorpay_secret;
+            if (r.razorpay_secret && typeof r.razorpay_secret === 'string') {
+              const trimmedSecret = r.razorpay_secret.trim();
+              if (trimmedSecret.startsWith('{')) {
+                try {
+                  const parsedSecret = JSON.parse(trimmedSecret);
+                  if (parsedSecret && typeof parsedSecret === 'object') {
+                    if (parsedSecret._ext) dbExt = parsedSecret._ext;
+                    if (parsedSecret.secret !== undefined) cleanRazorpaySecret = parsedSecret.secret;
+                    else if (parsedSecret._ext?.razorpay_secret !== undefined) cleanRazorpaySecret = parsedSecret._ext.razorpay_secret;
+                  }
+                } catch (e) {}
+              } else {
+                cleanRazorpaySecret = trimmedSecret;
               }
             }
 
@@ -862,7 +864,7 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
               live_gateway: liveGateway,
               payment_mode: paymentMode,
               razorpay_key: ov.razorpay_key !== undefined ? ov.razorpay_key : (r.razorpay_key || ''),
-              razorpay_secret: cleanRazorpaySecret,
+              razorpay_secret: cleanRazorpaySecret || ov.razorpay_secret || (typeof r.razorpay_secret === 'string' && !r.razorpay_secret.trim().startsWith('{') ? r.razorpay_secret.trim() : ''),
               phonepe_merchant_id: ov.phonepe_merchant_id !== undefined ? ov.phonepe_merchant_id : (r.phonepe_merchant_id || ''),
               phonepe_salt_key: ov.phonepe_salt_key !== undefined ? ov.phonepe_salt_key : (r.phonepe_salt_key || ''),
               phonepe_salt_index: ov.phonepe_salt_index !== undefined ? ov.phonepe_salt_index : (r.phonepe_salt_index || '1'),
@@ -872,6 +874,7 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
               payu_env: ov.payu_env !== undefined ? ov.payu_env : (r.payu_env || 'TEST'),
               gateway_verified: ov.gateway_verified !== undefined ? Boolean(ov.gateway_verified) : (r.gateway_verified ?? false),
               gateway_status_message: ov.gateway_status_message !== undefined ? ov.gateway_status_message : (r.gateway_status_message || ''),
+              gateway_verified_at: ov.gateway_verified_at !== undefined ? ov.gateway_verified_at : (r.gateway_verified_at || ''),
               city: ov.city !== undefined ? ov.city : (r.city || ''),
               state: ov.state !== undefined ? ov.state : (r.state || ''),
               pincode: ov.pincode !== undefined ? ov.pincode : (r.pincode || ''),
@@ -3198,6 +3201,7 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
         live_gateway: existingRest.live_gateway,
         payment_mode: existingRest.payment_mode,
         razorpay_key: existingRest.razorpay_key,
+        razorpay_secret: cleanSecret || existingRest.razorpay_secret || '',
         phonepe_merchant_id: existingRest.phonepe_merchant_id,
         phonepe_salt_key: existingRest.phonepe_salt_key,
         phonepe_salt_index: existingRest.phonepe_salt_index,
@@ -3206,7 +3210,8 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
         payu_merchant_salt: existingRest.payu_merchant_salt,
         payu_env: existingRest.payu_env,
         gateway_verified: existingRest.gateway_verified,
-        gateway_status_message: existingRest.gateway_status_message
+        gateway_status_message: existingRest.gateway_status_message,
+        gateway_verified_at: existingRest.gateway_verified_at
       } : {}),
       ...existingExt,
       ...updates
@@ -3241,16 +3246,20 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (updates.trial_start === undefined) delete coreUpdates.trial_start;
     if (updates.trial_end === undefined) delete coreUpdates.trial_end;
 
-    // Security Isolation: Scrub sensitive payment secrets/salts so they NEVER enter Supabase public columns or LocalStorage
-    const safeExt = sanitizeSensitiveCredentials(mergedExt);
+    const extToSave = { ...mergedExt };
     LIFECYCLE_KEYS.forEach(k => {
-      delete (safeExt as any)[k];
+      delete (extToSave as any)[k];
     });
 
-    // Pack ONLY safe operational fields into razorpay_secret as JSON bundle for permanent Supabase persistence
+    const secretToSave = updates.razorpay_secret !== undefined
+      ? updates.razorpay_secret
+      : (cleanSecret || extToSave.razorpay_secret || '');
+
+    // Pack complete authoritative configuration into razorpay_secret as JSON bundle for permanent Supabase persistence
     try {
       coreUpdates.razorpay_secret = JSON.stringify({
-        _ext: safeExt
+        secret: secretToSave,
+        _ext: extToSave
       });
     } catch (e) {}
 
@@ -3275,11 +3284,11 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error(`Update Failed: ${error.message}`);
     }
 
-    // 3. Save safe non-sensitive configuration to LocalStorage mirror (never secrets)
+    // 3. Save complete configuration to LocalStorage mirror
     try {
       const raw = localStorage.getItem('digimoms_restaurant_overrides');
       const overrides = raw ? JSON.parse(raw) : {};
-      overrides[id] = { ...(overrides[id] || {}), ...safeExt };
+      overrides[id] = { ...(overrides[id] || {}), ...extToSave };
       localStorage.setItem('digimoms_restaurant_overrides', JSON.stringify(overrides));
     } catch (e) {
       console.warn("Failed to write digimoms_restaurant_overrides", e);
@@ -3356,9 +3365,8 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     if (currentOwner && currentOwner.id === id) {
       setCurrentOwner(updatedFullObj);
-      const safeOwner = sanitizeSensitiveCredentials(updatedFullObj);
-      sessionStorage.setItem('digimoms_current_owner', JSON.stringify(safeOwner));
-      localStorage.setItem('digimoms_current_owner', JSON.stringify(safeOwner));
+      sessionStorage.setItem('digimoms_current_owner', JSON.stringify(updatedFullObj));
+      localStorage.setItem('digimoms_current_owner', JSON.stringify(updatedFullObj));
     }
 
     // 6. Force immediate background synchronization to verify all layers without throttle
