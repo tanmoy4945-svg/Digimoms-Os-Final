@@ -724,7 +724,7 @@ export const CeoDashboard: React.FC = () => {
             activeTab === 'history' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'
           }`}
         >
-          <History className="w-4 h-4 text-emerald-400" /> History (রিনিউয়াল)
+          <History className="w-4 h-4 text-emerald-400" /> Renewal History
         </button>
 
         {canViewSubs && (
@@ -756,7 +756,7 @@ export const CeoDashboard: React.FC = () => {
               activeTab === 'partner_commissions' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'
             }`}
           >
-            <Users className="w-4 h-4 text-purple-400" /> পার্টনার কমিশন (Partners)
+            <Users className="w-4 h-4 text-purple-400" /> Partner Commissions
           </button>
         )}
 

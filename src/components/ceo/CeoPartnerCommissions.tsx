@@ -3,7 +3,7 @@ import { useSaaS } from '../../context/SaaSContext';
 import { 
   Users, Search, Calendar, CheckCircle2, AlertCircle, Eye, 
   ExternalLink, Phone, DollarSign, ArrowRight, Filter,
-  Building2, ShieldCheck, History
+  Building2, ShieldCheck, History, Lock
 } from 'lucide-react';
 import { Restaurant, SubscriptionHistory } from '../../types';
 
@@ -44,12 +44,25 @@ export const CeoPartnerCommissions: React.FC<CeoPartnerCommissionsProps> = ({
 
   // Get commission status for each restaurant
   const getCommissionInfo = (restId: string) => {
-    const history = subscriptionHistory.filter(h => h.restaurant_id === restId && h.commission_status);
-    const pending = history.filter(h => h.commission_status === 'pending');
+    const rest = restaurants.find(r => r.id === restId);
+    const history = subscriptionHistory.filter(h => {
+      if (h.restaurant_id !== restId) return false;
+      return (
+        h.subscription_type === 'RENEWAL' ||
+        h.plan_name?.toLowerCase().includes('renewal') ||
+        h.plan_name?.toLowerCase().includes('monthly') ||
+        h.plan_name?.toLowerCase().includes('standard') ||
+        (h.amount !== undefined && Number(h.amount) > 0) ||
+        Boolean(h.commission_status)
+      );
+    });
+
+    const pending = history.filter(h => h.commission_status !== 'cleared');
     const cleared = history.filter(h => h.commission_status === 'cleared');
     
-    const totalPendingAmount = pending.length * (restaurants.find(r => r.id === restId)?.partner_commission_amount || 0);
-    const totalClearedAmount = cleared.length * (restaurants.find(r => r.id === restId)?.partner_commission_amount || 0);
+    const commRate = rest?.partner_commission_amount || 0;
+    const totalPendingAmount = pending.length * commRate;
+    const totalClearedAmount = cleared.length * commRate;
 
     return {
       history,
@@ -108,7 +121,7 @@ export const CeoPartnerCommissions: React.FC<CeoPartnerCommissionsProps> = ({
         <div>
           <h2 className="text-xl font-bold text-white flex items-center gap-2">
             <Users className="w-6 h-6 text-purple-400" />
-            পার্টনার কমিশন ম্যানেজমেন্ট (Partner Commissions)
+            Partner Commissions Management
           </h2>
           <p className="text-xs text-slate-400">Manage lifetime commissions for partners who brought restaurants to our platform.</p>
         </div>
@@ -295,63 +308,80 @@ export const CeoPartnerCommissions: React.FC<CeoPartnerCommissionsProps> = ({
                     </thead>
                     <tbody className="divide-y divide-slate-800/50">
                       {subscriptionHistory
-                        .filter(h => h.restaurant_id === viewDetails.id && h.commission_status)
+                        .filter(h => {
+                          if (h.restaurant_id !== viewDetails.id) return false;
+                          const isRenewal = (h.subscription_type && h.subscription_type.toUpperCase() === 'RENEWAL') ||
+                            (h.plan_name && (h.plan_name.toLowerCase().includes('renewal') || h.plan_name.toLowerCase().includes('monthly') || h.plan_name.toLowerCase().includes('standard') || h.plan_name.toLowerCase().includes('advance') || h.plan_name.toLowerCase().includes('pro'))) ||
+                            ((h.amount || h.amount_paid || 0) > 0) ||
+                            Boolean(h.commission_status);
+                          return isRenewal;
+                        })
                         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-                        .map(item => (
-                          <tr key={item.id} className="hover:bg-slate-800/30 transition-all">
-                            <td className="p-3 text-white">
-                              <div className="font-medium">{new Date(item.payment_date || item.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</div>
-                              <div className="text-[10px] text-slate-500 font-mono uppercase">{item.payment_id}</div>
-                            </td>
-                            <td className="p-3 font-bold text-emerald-400">₹{item.amount}</td>
-                            <td className="p-3 font-extrabold text-white">₹{viewDetails.partner_commission_amount || 0}</td>
-                            <td className="p-3">
-                              <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase border ${
-                                item.commission_status === 'pending'
-                                  ? 'bg-rose-500/20 border-rose-500/30 text-rose-300'
-                                  : 'bg-emerald-500/20 border-emerald-500/30 text-emerald-300'
-                              }`}>
-                                {item.commission_status}
-                              </span>
-                            </td>
-                            <td className="p-3">
-                              {item.commission_cleared_at ? (
-                                <div className="space-y-0.5">
-                                  <div className="text-white font-bold">{item.commission_cleared_by_mobile}</div>
-                                  <div className="text-slate-500 text-[9px]">{new Date(item.commission_cleared_at).toLocaleString()}</div>
-                                </div>
-                              ) : (
-                                <span className="text-slate-600">—</span>
-                              )}
-                            </td>
-                            <td className="p-3 text-right">
-                              {item.commission_status === 'pending' ? (
-                                <button
-                                  disabled={isProcessing}
-                                  onClick={() => handleClearCommission(item.id)}
-                                  className={`px-3 py-1.5 rounded-lg text-white text-[10px] font-bold shadow-lg transition-all flex items-center gap-1 ml-auto ${
-                                    userCanEdit ? 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-600/20' : 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-60'
-                                  }`}
-                                >
-                                  {!userCanEdit && <Lock className="w-3 h-3" />}
-                                  Mark as Cleared
-                                </button>
-                              ) : (
-                                <button
-                                  disabled={isProcessing}
-                                  onClick={() => handleResetCommission(item.id)}
-                                  className={`px-3 py-1.5 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 ml-auto ${
-                                    userCanDelete ? 'bg-slate-800 hover:bg-slate-700 text-rose-300 border-slate-700' : 'bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed opacity-60'
-                                  }`}
-                                >
-                                  {!userCanDelete && <Lock className="w-3 h-3" />}
-                                  Reset to Pending
-                                </button>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      {subscriptionHistory.filter(h => h.restaurant_id === viewDetails.id && h.commission_status).length === 0 && (
+                        .map(item => {
+                          const isCleared = item.commission_status === 'cleared';
+                          const effectiveStatus = isCleared ? 'cleared' : 'pending';
+                          return (
+                            <tr key={item.id} className="hover:bg-slate-800/30 transition-all">
+                              <td className="p-3 text-white">
+                                <div className="font-medium">{new Date(item.payment_date || item.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</div>
+                                <div className="text-[10px] text-slate-500 font-mono uppercase">{item.payment_id}</div>
+                              </td>
+                              <td className="p-3 font-bold text-emerald-400">₹{item.amount || item.amount_paid || 0}</td>
+                              <td className="p-3 font-extrabold text-white">₹{viewDetails.partner_commission_amount || 0}</td>
+                              <td className="p-3">
+                                <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase border ${
+                                  effectiveStatus === 'pending'
+                                    ? 'bg-rose-500/20 border-rose-500/30 text-rose-300'
+                                    : 'bg-emerald-500/20 border-emerald-500/30 text-emerald-300'
+                                }`}>
+                                  {effectiveStatus}
+                                </span>
+                              </td>
+                              <td className="p-3">
+                                {isCleared && item.commission_cleared_at ? (
+                                  <div className="space-y-0.5">
+                                    <div className="text-white font-bold">{item.commission_cleared_by_mobile || 'Admin'}</div>
+                                    <div className="text-slate-500 text-[9px]">{new Date(item.commission_cleared_at).toLocaleString()}</div>
+                                  </div>
+                                ) : (
+                                  <span className="text-slate-600">—</span>
+                                )}
+                              </td>
+                              <td className="p-3 text-right">
+                                {effectiveStatus === 'pending' ? (
+                                  <button
+                                    disabled={isProcessing}
+                                    onClick={() => handleClearCommission(item.id)}
+                                    className={`px-3 py-1.5 rounded-lg text-white text-[10px] font-bold shadow-lg transition-all flex items-center gap-1 ml-auto ${
+                                      userCanEdit ? 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-600/20' : 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-60'
+                                    }`}
+                                  >
+                                    {!userCanEdit && <Lock className="w-3 h-3" />}
+                                    Mark as Cleared
+                                  </button>
+                                ) : (
+                                  <button
+                                    disabled={isProcessing}
+                                    onClick={() => handleResetCommission(item.id)}
+                                    className={`px-3 py-1.5 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 ml-auto ${
+                                      userCanDelete ? 'bg-slate-800 hover:bg-slate-700 text-rose-300 border-slate-700' : 'bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed opacity-60'
+                                    }`}
+                                  >
+                                    {!userCanDelete && <Lock className="w-3 h-3" />}
+                                    Reset to Pending
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      {subscriptionHistory.filter(h => {
+                        if (h.restaurant_id !== viewDetails.id) return false;
+                        return (h.subscription_type && h.subscription_type.toUpperCase() === 'RENEWAL') ||
+                          (h.plan_name && (h.plan_name.toLowerCase().includes('renewal') || h.plan_name.toLowerCase().includes('monthly') || h.plan_name.toLowerCase().includes('standard') || h.plan_name.toLowerCase().includes('advance') || h.plan_name.toLowerCase().includes('pro'))) ||
+                          ((h.amount || h.amount_paid || 0) > 0) ||
+                          Boolean(h.commission_status);
+                      }).length === 0 && (
                         <tr>
                           <td colSpan={6} className="p-10 text-center text-slate-500 italic">
                             No commissionable renewals found for this restaurant yet.

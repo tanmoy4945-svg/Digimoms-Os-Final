@@ -964,7 +964,7 @@ export function generateSubscriptionInvoicePdf(subscription: any, restaurant: Re
     doc.setFontSize(10);
     doc.setTextColor(100, 116, 139);
     doc.text('Smart Cloud Restaurant Operating System', 20, 31);
-    doc.text('Email: support@digimoms.in | Web: digimoms.in', 20, 36);
+    doc.text('Email: digimomsagency@gmail.com | Web: digimoms.in', 20, 36);
 
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(14);
@@ -1068,7 +1068,7 @@ export function generateSubscriptionInvoicePdf(subscription: any, restaurant: Re
     doc.setFontSize(8);
     doc.text('1. This invoice is electronically generated and digitally authenticated by DigiMoms.', 20, footerY + 5);
     doc.text('2. Subscription charges grant continuous access to DigiMoms Restaurant OS for the active billing cycle.', 20, footerY + 9);
-    doc.text('3. For billing disputes or technical assistance, contact support@digimoms.in.', 20, footerY + 13);
+    doc.text('3. For billing disputes or technical assistance, contact digimomsagency@gmail.com.', 20, footerY + 13);
 
     doc.setFont('helvetica', 'italic');
     doc.setFontSize(8);

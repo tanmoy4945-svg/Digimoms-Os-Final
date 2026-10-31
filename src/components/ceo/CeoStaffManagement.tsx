@@ -842,7 +842,7 @@ export const CeoStaffManagement: React.FC<CeoStaffManagementProps> = ({
                   )}
                   {hasPartnerAccess && (
                     <span className="px-2.5 py-1 rounded-xl bg-amber-950/60 border border-amber-500/40 text-[10px] font-bold text-amber-300 flex items-center gap-1">
-                      <Users className="w-3.5 h-3.5 text-amber-400" /> Partner Manager (পার্টনার কমিশন)
+                      <Users className="w-3.5 h-3.5 text-amber-400" /> Partner Manager (Partner Commissions)
                     </span>
                   )}
                 </div>
@@ -880,7 +880,7 @@ export const CeoStaffManagement: React.FC<CeoStaffManagementProps> = ({
                     title="Enable Partner Commission Access in 1-Click"
                   >
                     <Users className="w-3.5 h-3.5 text-amber-400" />
-                    Grant Partner Manager Access (পার্টনার কমিশন)
+                    Grant Partner Manager Access (Partner Commissions)
                   </button>
                 )}
 

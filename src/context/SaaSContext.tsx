@@ -1163,7 +1163,48 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
       localHistory.forEach(item => histMap.set(item.id, item));
       // 3. Overlay Supabase entries (canonical truth)
       if (Array.isArray(subHistData)) {
-        subHistData.forEach((item: any) => histMap.set(item.id, item as SubscriptionHistory));
+        const restMap = new Map<string, any>((restData || []).map((r: any) => [r.id, r]));
+        subHistData.forEach((item: any) => {
+          let commission_status = item.commission_status;
+          let commission_cleared_at = item.commission_cleared_at;
+          let commission_cleared_by_mobile = item.commission_cleared_by_mobile;
+
+          // Check if reason contains packed JSON
+          if (item.reason && typeof item.reason === 'string' && item.reason.startsWith('{') && item.reason.includes('commission_status')) {
+            try {
+              const parsedReason = JSON.parse(item.reason);
+              if (parsedReason.commission_status) commission_status = parsedReason.commission_status;
+              if (parsedReason.commission_cleared_at) commission_cleared_at = parsedReason.commission_cleared_at;
+              if (parsedReason.commission_cleared_by_mobile) commission_cleared_by_mobile = parsedReason.commission_cleared_by_mobile;
+            } catch {}
+          }
+
+          // If still undefined, check if local storage had a value
+          const existingLocal = histMap.get(item.id);
+          if (!commission_status && existingLocal?.commission_status) {
+            commission_status = existingLocal.commission_status;
+            commission_cleared_at = existingLocal.commission_cleared_at;
+            commission_cleared_by_mobile = existingLocal.commission_cleared_by_mobile;
+          }
+
+          // If still undefined, but restaurant has a partner assigned, and this is a renewal record, default to pending
+          if (!commission_status) {
+            const rest = restMap.get(item.restaurant_id);
+            const isRenewal = (item.subscription_type && item.subscription_type.toUpperCase() === 'RENEWAL') ||
+              (item.plan_name && (item.plan_name.toLowerCase().includes('renewal') || item.plan_name.toLowerCase().includes('monthly') || item.plan_name.toLowerCase().includes('standard') || item.plan_name.toLowerCase().includes('advance') || item.plan_name.toLowerCase().includes('pro'))) ||
+              ((item.amount || item.amount_paid || 0) > 0);
+            if (rest?.partner_mobile && isRenewal) {
+              commission_status = 'pending';
+            }
+          }
+
+          histMap.set(item.id, {
+            ...item,
+            commission_status,
+            commission_cleared_at,
+            commission_cleared_by_mobile
+          } as SubscriptionHistory);
+        });
       }
 
       const mergedHistory = Array.from(histMap.values()).sort(
@@ -3422,21 +3463,38 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const safeInsertSubscriptionHistory = async (record: SubscriptionHistory) => {
-    let { error } = await supabase.from('subscription_history').insert([record]);
+    // Pack commission metadata into reason field so it persists across sessions even if DB lacks dedicated columns
+    let effectiveReason = record.reason || 'SaaS Renewal';
+    if (record.commission_status) {
+      let rObj: any = {};
+      if (typeof effectiveReason === 'string' && effectiveReason.startsWith('{')) {
+        try { rObj = JSON.parse(effectiveReason); } catch { rObj = { text: effectiveReason }; }
+      } else {
+        rObj = { text: effectiveReason };
+      }
+      rObj.commission_status = record.commission_status;
+      if (record.commission_cleared_at) rObj.commission_cleared_at = record.commission_cleared_at;
+      if (record.commission_cleared_by_mobile) rObj.commission_cleared_by_mobile = record.commission_cleared_by_mobile;
+      effectiveReason = JSON.stringify(rObj);
+    }
+
+    const payloadWithReason = {
+      ...record,
+      reason: effectiveReason
+    };
+
+    let { error } = await supabase.from('subscription_history').insert([payloadWithReason]);
     if (error) {
       if (error.code === '42501') {
         console.warn(
           "⚠️ Supabase RLS is blocking subscription_history insert (42501). Record safely saved in local storage. To sync across all devices, run in Supabase SQL Editor: ALTER TABLE subscription_history DISABLE ROW LEVEL SECURITY;"
         );
       } else if (error.code === '42703' || error.message?.includes('column')) {
-        console.warn("Retrying subscription_history insert without new columns:", error);
+        console.warn("Retrying subscription_history insert without missing columns:", error);
         const { 
-          granted_by, reason, subscription_type, previous_expiry, new_expiry, 
-          days_added, start_date, end_date, plan_name, 
-          razorpay_order_id, razorpay_payment_id,
           commission_status, commission_cleared_at, commission_cleared_by_mobile,
           ...core 
-        } = record as any;
+        } = payloadWithReason as any;
         
         const retry1 = await supabase.from('subscription_history').insert([core]);
         if (retry1.error) {
@@ -3444,10 +3502,12 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
            const minimal = {
                id: record.id,
                restaurant_id: record.restaurant_id,
+               plan_name: record.plan_name || 'Standard Monthly',
                amount: record.amount,
                payment_status: record.payment_status,
                created_at: record.created_at,
-               duration_months: record.duration_months || 0
+               duration_months: record.duration_months || 0,
+               reason: effectiveReason
            };
            const retry2 = await supabase.from('subscription_history').insert([minimal]);
            if (retry2.error) {
@@ -3897,16 +3957,38 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return updated;
     });
 
-    // 2. Persist to DB
-    const { error } = await supabase.from('subscription_history').update({
-      commission_status: status,
-      commission_cleared_at: status === 'cleared' ? now : null,
-      commission_cleared_by_mobile: status === 'cleared' ? clearedByMobile : null
-    }).eq('id', historyId);
+    // Prepare packed reason so status persists across sessions in Supabase
+    const existingRecord = subscriptionHistory.find(s => s.id === historyId);
+    let rObj: any = {};
+    if (existingRecord?.reason) {
+      if (typeof existingRecord.reason === 'string' && existingRecord.reason.startsWith('{')) {
+        try { rObj = JSON.parse(existingRecord.reason); } catch { rObj = { text: existingRecord.reason }; }
+      } else {
+        rObj = { text: existingRecord.reason };
+      }
+    }
+    rObj.commission_status = status;
+    rObj.commission_cleared_at = status === 'cleared' ? now : null;
+    rObj.commission_cleared_by_mobile = status === 'cleared' ? clearedByMobile : null;
+    const packedReason = JSON.stringify(rObj);
 
-    if (error) {
-      console.warn("Could not update commission status in DB (Expected if columns missing):", error);
-      // Fallback: We still have it in React state and local storage is updated in setSubscriptionHistory's callback or next fetch
+    // 2. Persist to DB (attempts direct columns and reason column)
+    try {
+      const { error } = await supabase.from('subscription_history').update({
+        commission_status: status,
+        commission_cleared_at: status === 'cleared' ? now : null,
+        commission_cleared_by_mobile: status === 'cleared' ? clearedByMobile : null,
+        reason: packedReason
+      }).eq('id', historyId);
+
+      if (error) {
+        // Fallback: update only reason if commission_status columns do not exist
+        await supabase.from('subscription_history').update({
+          reason: packedReason
+        }).eq('id', historyId);
+      }
+    } catch (err) {
+      console.warn("Could not update commission status in DB:", err);
     }
 
     showToast(status === 'cleared' ? 'Commission marked as cleared.' : 'Commission reset to pending.', 'success');

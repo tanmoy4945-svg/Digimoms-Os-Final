@@ -473,7 +473,7 @@ export async function verifyCeoGatewayConfig(
         amount: 999,
         productinfo: 'DigiMoms OS Subscription',
         firstname: 'CEO Admin',
-        email: 'ceo@digimoms.in',
+        email: 'digimomsagency@gmail.com',
         surl: 'http://localhost/success',
         furl: 'http://localhost/failure',
         env
