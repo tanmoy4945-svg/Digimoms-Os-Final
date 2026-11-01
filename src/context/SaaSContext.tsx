@@ -1182,6 +1182,7 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
           let commission_amount = item.commission_amount !== undefined ? Number(item.commission_amount) : undefined;
           let commission_rate = item.commission_rate;
 
+          let cleanReason = item.reason;
           // Check if reason contains packed JSON snapshot
           if (item.reason && typeof item.reason === 'string') {
             const trimmedReason = item.reason.trim();
@@ -1195,7 +1196,15 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   commission_amount = Number(parsedReason.commission_amount);
                 }
                 if (parsedReason.commission_rate) commission_rate = parsedReason.commission_rate;
-              } catch {}
+                // Clean customer-facing reason text so owners never see commission JSON
+                if (parsedReason.text && typeof parsedReason.text === 'string' && !parsedReason.text.toLowerCase().includes('commission')) {
+                  cleanReason = parsedReason.text;
+                } else {
+                  cleanReason = item.plan_name || 'Monthly Subscription Renewal';
+                }
+              } catch {
+                cleanReason = item.plan_name || 'Monthly Subscription Renewal';
+              }
             }
           }
 
@@ -1222,6 +1231,7 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
           histMap.set(item.id, {
             ...item,
+            reason: cleanReason,
             commission_status,
             commission_cleared_at,
             commission_cleared_by_mobile,
@@ -3984,6 +3994,7 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setSubscriptionHistory(prev => {
       const updated = prev.map(s => s.id === historyId ? {
         ...s,
+        reason: (typeof s.reason === 'string' && s.reason.trim().startsWith('{')) ? (s.plan_name || 'Monthly Subscription Renewal') : s.reason,
         commission_status: status,
         commission_cleared_at: status === 'cleared' ? now : undefined,
         commission_cleared_by_mobile: status === 'cleared' ? clearedByMobile : undefined,

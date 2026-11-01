@@ -1755,10 +1755,26 @@ export const OwnerDashboard: React.FC = () => {
                             {/* Details Row */}
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] pt-1 border-t border-slate-800/80">
                               <div>
-                                <span className="text-slate-500">Plan / Reason: </span>
-                                <span className="text-slate-200 font-medium">{sub.reason || sub.plan_name || (isFree ? 'Promotional Free Period' : 'Monthly Subscription')}</span>
+                                <span className="text-slate-500">Plan: </span>
+                                <span className="text-slate-200 font-medium">
+                                  {(() => {
+                                    let r = sub.reason || sub.plan_name || (isFree ? 'Promotional Free Period' : 'Monthly Subscription Renewal');
+                                    if (typeof r === 'string' && r.trim().startsWith('{')) {
+                                      try {
+                                        const p = JSON.parse(r.trim());
+                                        r = p.text || sub.plan_name || (isFree ? 'Promotional Free Period' : 'Monthly Subscription Renewal');
+                                      } catch {
+                                        r = sub.plan_name || (isFree ? 'Promotional Free Period' : 'Monthly Subscription Renewal');
+                                      }
+                                    }
+                                    if (typeof r === 'string' && (r.toLowerCase().includes('commission') || r.includes('{'))) {
+                                      r = sub.plan_name || (isFree ? 'Promotional Free Period' : 'Monthly Subscription Renewal');
+                                    }
+                                    return r;
+                                  })()}
+                                </span>
                               </div>
-                              {sub.granted_by && (
+                              {sub.granted_by && !sub.granted_by.toLowerCase().includes('commission') && (
                                 <div>
                                   <span className="text-slate-500">Granted By: </span>
                                   <span className="text-slate-200 font-medium">{sub.granted_by}</span>
