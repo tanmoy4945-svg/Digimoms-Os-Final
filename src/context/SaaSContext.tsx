@@ -138,7 +138,7 @@ interface SaaSContextType {
   deleteRestaurantPermanently: (id: string) => Promise<void>;
   deleteOldRestaurantData: (id: string, duration: '6m' | '1y') => Promise<number>;
   clearRestaurantData: (id: string) => Promise<boolean>;
-  deleteRestaurantDataByTime: (id: string, timeRange: 'all' | 'today' | '7d' | '30d' | '6m' | '1y') => Promise<number>;
+  deleteRestaurantDataByTime: (id: string, timeRange: 'all' | 'today' | '7d' | '30d' | '6m' | '1y' | 'custom', customFrom?: string, customTo?: string) => Promise<number>;
   factoryResetRestaurant: (id: string, ceoPass: string) => Promise<boolean>;
   executeProductionReset: (ceoPassword?: string) => Promise<boolean>;
   updateCommissionStatus: (historyId: string, status: 'pending' | 'cleared', clearedByMobile: string, commissionAmount?: number, commissionRate?: string) => Promise<void>;
@@ -4348,8 +4348,13 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // 2. Flexible Time-Range Data Deletion (All Time, Today, 7 Days, 30 Days, 6 Months, 1 Year)
-  const deleteRestaurantDataByTime = async (id: string, timeRange: 'all' | 'today' | '7d' | '30d' | '6m' | '1y'): Promise<number> => {
+  // 2. Flexible Time-Range Data Deletion (All Time, Today, 7 Days, 30 Days, 6 Months, 1 Year, or Date-to-Date Custom Range)
+  const deleteRestaurantDataByTime = async (
+    id: string,
+    timeRange: 'all' | 'today' | '7d' | '30d' | '6m' | '1y' | 'custom',
+    customFrom?: string,
+    customTo?: string
+  ): Promise<number> => {
     try {
       let query = supabase.from('orders').select('id, grand_total, online_amount, cash_amount, payment_status, order_status, created_at').eq('restaurant_id', id);
 
@@ -4371,6 +4376,17 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const d = new Date();
         d.setFullYear(d.getFullYear() - 1);
         query = query.lt('created_at', d.toISOString());
+      } else if (timeRange === 'custom') {
+        if (customFrom) {
+          const fromDate = new Date(customFrom);
+          fromDate.setHours(0, 0, 0, 0);
+          query = query.gte('created_at', fromDate.toISOString());
+        }
+        if (customTo) {
+          const toDate = new Date(customTo);
+          toDate.setHours(23, 59, 59, 999);
+          query = query.lte('created_at', toDate.toISOString());
+        }
       }
 
       const { data: dbOrders, error: fetchErr } = await query;
@@ -4382,12 +4398,12 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const orderIds = (dbOrders || []).map(o => o.id);
 
       if (orderIds.length > 0) {
-        // Delete order_items first in chunks of 50
+        // Delete order_items first in chunks of 50 directly in Supabase
         for (let i = 0; i < orderIds.length; i += 50) {
           const chunk = orderIds.slice(i, i + 50);
           await supabase.from('order_items').delete().in('order_id', chunk);
         }
-        // Delete orders in chunks of 50
+        // Delete orders in chunks of 50 directly in Supabase
         for (let i = 0; i < orderIds.length; i += 50) {
           const chunk = orderIds.slice(i, i + 50);
           await supabase.from('orders').delete().in('id', chunk);
@@ -4405,6 +4421,38 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
           archived_orders_count: 0,
           archived_revenue_by_year: {}
         });
+      } else if (orderIds.length > 0) {
+        // Preserve revenue in archive for partial or date-to-date deletions
+        let revenueToArchive = 0;
+        const yearlyArchiveMap: Record<string, number> = {};
+        for (const ord of (dbOrders || [])) {
+          if (ord.order_status === 'cancelled') continue;
+          const pStatus = ord.payment_status;
+          const isPaid = pStatus === 'paid' || pStatus === 'paid_live' || pStatus === 'paid_cash' || pStatus === 'paid_demo';
+          const isPartial = pStatus === 'partially_paid' || pStatus === 'partial';
+          if (isPaid || isPartial) {
+            const amt = isPaid ? Number(ord.grand_total || 0) : (Number(ord.online_amount || 0) + Number(ord.cash_amount || 0));
+            revenueToArchive += amt;
+            const y = new Date(ord.created_at).getFullYear().toString();
+            yearlyArchiveMap[y] = (yearlyArchiveMap[y] || 0) + amt;
+          }
+        }
+
+        const rest = restaurants.find(r => r.id === id);
+        if (rest) {
+          const existingArchived = rest.archived_revenue || 0;
+          const existingArchivedCount = rest.archived_orders_count || 0;
+          const existingYearlyMap = rest.archived_revenue_by_year || {};
+          const mergedYearlyMap = { ...existingYearlyMap };
+          for (const [y, amt] of Object.entries(yearlyArchiveMap)) {
+            mergedYearlyMap[y] = (mergedYearlyMap[y] || 0) + amt;
+          }
+          await updateRestaurant(id, {
+            archived_revenue: existingArchived + revenueToArchive,
+            archived_orders_count: existingArchivedCount + orderIds.length,
+            archived_revenue_by_year: mergedYearlyMap
+          });
+        }
       }
 
       // Optimistic local state update
@@ -4427,7 +4475,7 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
         actor_name: 'CEO SuperAdmin',
         actor_role: 'ceo',
         action: 'CLEAR_RESTAURANT_DATA_BY_TIME',
-        description: `Deleted ${orderIds.length} orders for range: ${timeRange}`
+        description: `Deleted ${orderIds.length} orders directly in Supabase for range: ${timeRange}${timeRange === 'custom' ? ` (${customFrom || ''} to ${customTo || ''})` : ''}`
       });
 
       if (typeof window !== 'undefined') {

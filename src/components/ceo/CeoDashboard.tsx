@@ -222,6 +222,8 @@ export const CeoDashboard: React.FC = () => {
   // Data Deletion Modal
   const [showDataModal, setShowDataModal] = useState<Restaurant | null>(null);
   const [isDeletingData, setIsDeletingData] = useState<boolean>(false);
+  const [customFromDate, setCustomFromDate] = useState<string>('');
+  const [customToDate, setCustomToDate] = useState<string>('');
 
   // Legacy trial & extension modals state (maintained for fallback)
   const [showTrialModal, setShowTrialModal] = useState<Restaurant | null>(null);
@@ -2277,6 +2279,74 @@ export const CeoDashboard: React.FC = () => {
                     <span className="text-[9px] text-slate-400">&gt; ১ বছরের পুরানো ডাটা</span>
                   </button>
                 </div>
+              </div>
+
+              {/* TERTIARY: CUSTOM DATE-TO-DATE RANGE PICKER */}
+              <div className="p-4 bg-slate-800/60 border border-purple-500/30 rounded-2xl space-y-3">
+                <div className="flex gap-2">
+                  <Calendar className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <span>Custom Date-to-Date Deletion</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-900/60 text-purple-300 font-normal">তারিখ অনুযায়ী নির্দিষ্ট ডাটা মুছুন</span>
+                    </h4>
+                    <p className="text-[10px] text-slate-400 mt-0.5">
+                      শুরু ও শেষের তারিখ নির্বাচন করে নির্দিষ্ট কোনো মাস বা তারিখের সমস্ত অর্ডার সরাসরি Supabase থেকে ডিলিট করুন:
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 pt-1">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">From Date (শুরুর তারিখ)</label>
+                    <input
+                      type="date"
+                      value={customFromDate}
+                      onChange={(e) => setCustomFromDate(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-purple-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">To Date (শেষ তারিখ)</label>
+                    <input
+                      type="date"
+                      value={customToDate}
+                      onChange={(e) => setCustomToDate(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-purple-500"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  onClick={async () => {
+                    if (!customFromDate && !customToDate) {
+                      showToast('Please select at least a From or To date.', 'error');
+                      return;
+                    }
+                    const rangeLabel = customFromDate && customToDate 
+                      ? `${customFromDate} to ${customToDate}` 
+                      : (customFromDate ? `from ${customFromDate}` : `up to ${customToDate}`);
+                    if (!window.confirm(`Are you sure you want to permanently delete all orders (${rangeLabel}) for "${showDataModal.name}"? This will delete from Supabase database.`)) return;
+
+                    setIsDeletingData(true);
+                    try {
+                      const count = await deleteRestaurantDataByTime(showDataModal.id, 'custom', customFromDate, customToDate);
+                      showToast(`Successfully deleted ${count} orders (${rangeLabel}) directly from Supabase!`, 'success');
+                      setShowDataModal(null);
+                      setCustomFromDate('');
+                      setCustomToDate('');
+                    } catch (e: any) {
+                      showToast(e.message || 'Error deleting custom range data', 'error');
+                    } finally {
+                      setIsDeletingData(false);
+                    }
+                  }}
+                  disabled={isDeletingData || (!customFromDate && !customToDate)}
+                  className="w-full py-2.5 px-4 bg-purple-600 hover:bg-purple-500 rounded-xl text-xs font-bold text-white flex items-center justify-center gap-2 shadow-lg shadow-purple-600/30 transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  {isDeletingData ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                  <span>Delete Selected Date Range Data (তারিখ অনুযায়ী মুছুন)</span>
+                </button>
               </div>
             </div>
 
