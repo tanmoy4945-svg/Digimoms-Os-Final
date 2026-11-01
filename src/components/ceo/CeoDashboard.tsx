@@ -94,6 +94,7 @@ export const CeoDashboard: React.FC = () => {
     archiveRestaurant,
     deleteRestaurantPermanently,
     deleteOldRestaurantData,
+    clearRestaurantData,
     factoryResetRestaurant,
     executeProductionReset,
     logoutCeo,
@@ -203,6 +204,7 @@ export const CeoDashboard: React.FC = () => {
   const [showProdResetModal, setShowProdResetModal] = useState(false);
   const [prodResetPasswordInput, setProdResetPasswordInput] = useState('');
   const [resetPasswordInput, setResetPasswordInput] = useState('');
+  const [isResetting, setIsResetting] = useState<boolean>(false);
   const [editingRestaurant, setEditingRestaurant] = useState<Restaurant | null>(null);
   const [showRazorpayModal, setShowRazorpayModal] = useState(false);
 
@@ -553,10 +555,16 @@ export const CeoDashboard: React.FC = () => {
     setShowRazorpayModal(false);
   };
 
-  const handleConfirmReset = (id: string) => {
-    if (factoryResetRestaurant(id, resetPasswordInput)) {
-      setShowResetModal(null);
-      setResetPasswordInput('');
+  const handleConfirmReset = async (id: string) => {
+    setIsResetting(true);
+    try {
+      const ok = await factoryResetRestaurant(id, resetPasswordInput);
+      if (ok) {
+        setShowResetModal(null);
+        setResetPasswordInput('');
+      }
+    } finally {
+      setIsResetting(false);
     }
   };
 
@@ -1732,37 +1740,61 @@ export const CeoDashboard: React.FC = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
           <div className="bg-slate-900 border border-rose-500/50 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
             <div className="flex items-center gap-3 text-rose-400">
-              <AlertTriangle className="w-8 h-8" />
-              <h3 className="text-lg font-bold text-white">Danger Zone: Factory Reset</h3>
+              <AlertTriangle className="w-8 h-8 shrink-0" />
+              <div>
+                <h3 className="text-lg font-bold text-white">Danger Zone: Full Factory Reset</h3>
+                <p className="text-[11px] text-rose-300">Complete restaurant wipeout & factory baseline restore</p>
+              </div>
             </div>
-            <p className="text-xs text-slate-300">
-              This action will clear all active orders, bills, and call waiter logs for this restaurant. Re-enter CEO Password to confirm.
-            </p>
+            <div className="p-3 bg-rose-950/30 border border-rose-500/30 rounded-xl space-y-2 text-xs text-rose-200">
+              <p className="font-semibold text-rose-300">This action will permanently delete:</p>
+              <ul className="list-disc ml-4 text-[11px] text-slate-300 space-y-1">
+                <li><strong className="text-rose-200">All Live & Completed Orders</strong> & order items</li>
+                <li><strong className="text-rose-200">All Menu Items & Categories</strong></li>
+                <li><strong className="text-rose-200">All Custom Staff Accounts</strong></li>
+                <li><strong className="text-rose-200">All Customer Feedback & Waiter Calls</strong></li>
+                <li><strong className="text-rose-200">Restore Tables to Factory Default</strong> (Tables 1–4)</li>
+              </ul>
+              <p className="text-[10px] text-emerald-400 font-medium">✓ Restaurant login credentials & subscription status will remain intact.</p>
+            </div>
 
             <div>
               <label className="block text-xs font-semibold text-slate-300 mb-1">Re-enter CEO Password</label>
               <input
                 type="password"
                 required
+                disabled={isResetting}
                 placeholder="Enter CEO password to confirm"
                 value={resetPasswordInput}
                 onChange={(e) => setResetPasswordInput(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-white outline-none focus:border-rose-500"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-white outline-none focus:border-rose-500 disabled:opacity-50"
               />
             </div>
 
             <div className="flex items-center justify-end gap-3 pt-2">
               <button
-                onClick={() => setShowResetModal(null)}
-                className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 font-bold text-xs"
+                disabled={isResetting}
+                onClick={() => {
+                  setShowResetModal(null);
+                  setResetPasswordInput('');
+                }}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs disabled:opacity-50 transition-colors"
               >
                 Cancel
               </button>
               <button
+                disabled={isResetting || !resetPasswordInput.trim()}
                 onClick={() => handleConfirmReset(showResetModal)}
-                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-lg shadow-rose-600/30"
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-lg shadow-rose-600/30 disabled:opacity-50 flex items-center gap-2 transition-all"
               >
-                Execute Factory Reset
+                {isResetting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Resetting Everything...</span>
+                  </>
+                ) : (
+                  <span>Execute Factory Reset</span>
+                )}
               </button>
             </div>
           </div>
@@ -2078,61 +2110,88 @@ export const CeoDashboard: React.FC = () => {
             </div>
 
             <div className="space-y-4">
-              <div className="p-4 bg-orange-950/20 border border-orange-500/20 rounded-xl space-y-2">
-                <div className="flex gap-2">
-                  <AlertTriangle className="w-5 h-5 text-orange-400 shrink-0" />
-                  <div className="text-xs text-orange-200">
-                    <p className="font-semibold mb-1">Data Deletion Policy</p>
-                    <p>DigiMoms is authorized to request data deletion every 6 to 12 months as per the Service Agreement. This action removes raw order records while preserving:</p>
-                    <ul className="list-disc ml-4 mt-2 text-[10px] text-orange-300 space-y-1">
-                      <li>Lifetime Income tracking (adds deleted revenue to archive)</li>
-                      <li>Current Year Income tracking</li>
-                      <li>Orders from the last 7 days</li>
-                      <li>Subscription & Free Access History</li>
-                    </ul>
+              {/* PRIMARY: CLEAR ALL ORDERS & LIVE OPERATIONAL DATA */}
+              <div className="p-4 bg-red-950/20 border border-red-500/30 rounded-2xl space-y-3">
+                <div className="flex gap-2.5">
+                  <Trash2 className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="text-xs font-bold text-white">Clear All Orders & Operational Data</h4>
+                    <p className="text-[11px] text-slate-300 mt-0.5">
+                      Instantly wipe all orders, bills, customer feedback, active table sessions, and call waiter requests. Menu items, categories, and staff accounts will remain untouched.
+                    </p>
                   </div>
                 </div>
+                <button
+                  onClick={async () => {
+                    if (!window.confirm(`Are you sure you want to completely clear all orders and operational data for "${showDataModal.name}"? This cannot be undone.`)) return;
+                    setIsDeletingData(true);
+                    try {
+                      const ok = await clearRestaurantData(showDataModal.id);
+                      if (ok) {
+                        setShowDataModal(null);
+                      }
+                    } finally {
+                      setIsDeletingData(false);
+                    }
+                  }}
+                  disabled={isDeletingData}
+                  className="w-full py-2.5 px-4 bg-red-600 hover:bg-red-500 rounded-xl text-xs font-bold text-white flex items-center justify-center gap-2 shadow-lg shadow-red-600/30 transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  {isDeletingData ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                  <span>Clear All Live Orders & Data Now</span>
+                </button>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  onClick={async () => {
-                    setIsDeletingData(true);
-                    try {
-                      const count = await deleteOldRestaurantData(showDataModal.id, '6m');
-                      showToast(`Successfully archived ${count} orders older than 6 months.`, 'success');
-                      setShowDataModal(null);
-                    } catch (e: any) {
-                      showToast(e.message || 'Error deleting data', 'error');
-                    } finally {
-                      setIsDeletingData(false);
-                    }
-                  }}
-                  disabled={isDeletingData}
-                  className="py-3 px-4 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-bold text-white flex flex-col items-center justify-center gap-1 border border-slate-700 transition-colors disabled:opacity-50"
-                >
-                  {isDeletingData ? <Loader2 className="w-4 h-4 animate-spin text-orange-400" /> : <Trash2 className="w-4 h-4 text-orange-400" />}
-                  <span>Delete &gt; 6 Months Data</span>
-                </button>
-                <button
-                  onClick={async () => {
-                    setIsDeletingData(true);
-                    try {
-                      const count = await deleteOldRestaurantData(showDataModal.id, '1y');
-                      showToast(`Successfully archived ${count} orders older than 1 year.`, 'success');
-                      setShowDataModal(null);
-                    } catch (e: any) {
-                      showToast(e.message || 'Error deleting data', 'error');
-                    } finally {
-                      setIsDeletingData(false);
-                    }
-                  }}
-                  disabled={isDeletingData}
-                  className="py-3 px-4 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-bold text-white flex flex-col items-center justify-center gap-1 border border-slate-700 transition-colors disabled:opacity-50"
-                >
-                  {isDeletingData ? <Loader2 className="w-4 h-4 animate-spin text-orange-400" /> : <Archive className="w-4 h-4 text-orange-400" />}
-                  <span>Delete &gt; 1 Year Data</span>
-                </button>
+              {/* SECONDARY: DATA DELETION / ARCHIVE POLICY */}
+              <div className="p-4 bg-slate-800/50 border border-slate-700/60 rounded-2xl space-y-3">
+                <div className="flex gap-2">
+                  <AlertTriangle className="w-4 h-4 text-orange-400 shrink-0 mt-0.5" />
+                  <div className="text-xs text-slate-300">
+                    <p className="font-semibold text-white mb-0.5">Scheduled Periodic Archive Policy</p>
+                    <p className="text-[10px] text-slate-400">Archive orders older than 6 to 12 months per Service Agreement while preserving lifetime revenue counters:</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={async () => {
+                      setIsDeletingData(true);
+                      try {
+                        const count = await deleteOldRestaurantData(showDataModal.id, '6m');
+                        showToast(`Successfully archived ${count} orders older than 6 months.`, 'success');
+                        setShowDataModal(null);
+                      } catch (e: any) {
+                        showToast(e.message || 'Error deleting data', 'error');
+                      } finally {
+                        setIsDeletingData(false);
+                      }
+                    }}
+                    disabled={isDeletingData}
+                    className="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 rounded-xl text-[11px] font-bold text-slate-200 flex flex-col items-center justify-center gap-1 border border-slate-700 transition-colors disabled:opacity-50 cursor-pointer"
+                  >
+                    {isDeletingData ? <Loader2 className="w-4 h-4 animate-spin text-orange-400" /> : <Trash2 className="w-4 h-4 text-orange-400" />}
+                    <span>Archive &gt; 6 Months Data</span>
+                  </button>
+                  <button
+                    onClick={async () => {
+                      setIsDeletingData(true);
+                      try {
+                        const count = await deleteOldRestaurantData(showDataModal.id, '1y');
+                        showToast(`Successfully archived ${count} orders older than 1 year.`, 'success');
+                        setShowDataModal(null);
+                      } catch (e: any) {
+                        showToast(e.message || 'Error deleting data', 'error');
+                      } finally {
+                        setIsDeletingData(false);
+                      }
+                    }}
+                    disabled={isDeletingData}
+                    className="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 rounded-xl text-[11px] font-bold text-slate-200 flex flex-col items-center justify-center gap-1 border border-slate-700 transition-colors disabled:opacity-50 cursor-pointer"
+                  >
+                    {isDeletingData ? <Loader2 className="w-4 h-4 animate-spin text-orange-400" /> : <Archive className="w-4 h-4 text-orange-400" />}
+                    <span>Archive &gt; 1 Year Data</span>
+                  </button>
+                </div>
               </div>
             </div>
 

@@ -55,6 +55,7 @@ export const OwnerDashboard: React.FC = () => {
     subscriptionHistory,
     updateOwnerPassword,
     settleCompletedOrderPayment,
+    fetchAllFromSupabase,
     showToast
   } = useSaaS();
 
@@ -86,6 +87,19 @@ export const OwnerDashboard: React.FC = () => {
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
   const [selectedBillOrder, setSelectedBillOrder] = useState<Order | null>(null);
   const [selectedOfflineOrder, setSelectedOfflineOrder] = useState<Order | null>(null);
+
+  React.useEffect(() => {
+    const handleDataCleared = (e: any) => {
+      if (!currentOwner) return;
+      if (!e.detail?.restaurantId || e.detail?.restaurantId === currentOwner.id) {
+        fetchAllFromSupabase(true).catch(console.error);
+      }
+    };
+    window.addEventListener('digimoms_data_cleared', handleDataCleared);
+    return () => {
+      window.removeEventListener('digimoms_data_cleared', handleDataCleared);
+    };
+  }, [currentOwner?.id, fetchAllFromSupabase]);
 
   if (!currentOwner) {
     return (

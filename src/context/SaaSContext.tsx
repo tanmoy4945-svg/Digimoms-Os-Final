@@ -137,6 +137,7 @@ interface SaaSContextType {
   archiveRestaurant: (id: string) => Promise<void>;
   deleteRestaurantPermanently: (id: string) => Promise<void>;
   deleteOldRestaurantData: (id: string, duration: '6m' | '1y') => Promise<number>;
+  clearRestaurantData: (id: string) => Promise<boolean>;
   factoryResetRestaurant: (id: string, ceoPass: string) => Promise<boolean>;
   executeProductionReset: (ceoPassword?: string) => Promise<boolean>;
   updateCommissionStatus: (historyId: string, status: 'pending' | 'cleared', clearedByMobile: string, commissionAmount?: number, commissionRate?: string) => Promise<void>;
@@ -1364,20 +1365,20 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const uniqueOrders = Array.from(new Map(mappedOrders.map(o => [o.id, o])).values());
         
         setOrders(prev => {
-          const lockedIds = orderLocksRef.current;
-          const orderMap = new Map<string, Order>(prev.map(o => [o.id, o]));
-          
-          uniqueOrders.forEach(newOrd => {
-            if (lockedIds.has(newOrd.id)) return; // Skip updating locked orders
-            orderMap.set(newOrd.id, newOrd);
-          });
-          
-          return Array.from(orderMap.values())
+          if (activeRestId) {
+            // Keep orders from other restaurants, but for activeRestId use the authoritative fresh list from Supabase
+            const otherRestOrders = prev.filter(o => o.restaurant_id !== activeRestId);
+            return [...uniqueOrders, ...otherRestOrders]
+              .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+              .slice(0, 600);
+          }
+          // Global CEO scope:
+          return uniqueOrders
             .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
             .slice(0, 600);
         });
         
-        uniqueOrders.forEach(o => knownOrderIdsRef.current.add(o.id));
+        knownOrderIdsRef.current = new Set(uniqueOrders.map(o => o.id));
       }
 
       if (feedbackData) setFeedbackList(feedbackData as CustomerFeedback[]);
@@ -2123,6 +2124,23 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       })
       .on('broadcast', { event: 'order_status_event' }, ({ payload }: any) => {
+        if (payload?.action === 'CLEARED' || payload?.action === 'FACTORY_RESET') {
+          const restId = payload.restaurant_id;
+          if (restId) {
+            setOrders(prev => prev.filter(o => o.restaurant_id !== restId));
+            setFeedbackList(prev => prev.filter(f => f.restaurant_id !== restId));
+            setCallRequests(prev => prev.filter(c => c.restaurant_id !== restId));
+            setTableSessions(prev => prev.filter(s => s.restaurant_id !== restId));
+            if (payload.action === 'FACTORY_RESET') {
+              setMenuItems(prev => prev.filter(m => m.restaurant_id !== restId));
+              setCategories(prev => prev.filter(c => c.restaurant_id !== restId));
+              setStaffList(prev => prev.filter(s => s.restaurant_id !== restId));
+            }
+            fetchAllFromSupabase(true).catch(console.error);
+          }
+          return;
+        }
+
         if (payload?.orderId && payload?.order_status) {
           if (orderLocksRef.current.has(payload.orderId)) return;
           
@@ -2184,14 +2202,21 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
           processOrderInsert(newRow);
         } else if (eventType === 'UPDATE' && newRow?.id) {
           processOrderUpdate(newRow, oldRow);
+        } else if (eventType === 'DELETE' && oldRow?.id) {
+          const deletedId = oldRow.id;
+          knownOrderIdsRef.current.delete(deletedId);
+          setOrders(prev => prev.filter(o => o.id !== deletedId));
         }
       })
       .on('postgres_changes', callsFilter, (payload: any) => {
-        const { eventType, new: newRow } = payload;
+        const { eventType, new: newRow, old: oldRow } = payload;
         if (eventType === 'INSERT' && newRow?.id) {
           processCallInsert(newRow);
         } else if (eventType === 'UPDATE' && newRow?.id) {
           processCallUpdate(newRow);
+        } else if (eventType === 'DELETE' && oldRow?.id) {
+          knownCallIdsRef.current.delete(oldRow.id);
+          setCallRequests(prev => prev.filter(c => c.id !== oldRow.id));
         }
       })
       .on('postgres_changes', sessionsFilter, (payload: any) => {
@@ -2253,6 +2278,12 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
         ]);
 
         if (ordRes.data && Array.isArray(ordRes.data)) {
+          if (ordRes.data.length === 0) {
+            setOrders(prev => {
+              const hasOrdersForRest = prev.some(o => o.restaurant_id === activeRestId);
+              return hasOrdersForRest ? prev.filter(o => o.restaurant_id !== activeRestId) : prev;
+            });
+          }
           const lockedIds = orderLocksRef.current;
           for (const sOrd of ordRes.data) {
             if (!sOrd?.id || lockedIds.has(sOrd.id)) continue;
@@ -2273,6 +2304,12 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         if (callRes.data && Array.isArray(callRes.data)) {
+          if (callRes.data.length === 0) {
+            setCallRequests(prev => {
+              const hasCalls = prev.some(c => c.restaurant_id === activeRestId && c.status === 'pending');
+              return hasCalls ? prev.filter(c => c.restaurant_id !== activeRestId) : prev;
+            });
+          }
           for (const sCall of callRes.data) {
             if (!sCall?.id) continue;
             if (!knownCallIdsRef.current.has(sCall.id)) {
@@ -4161,10 +4198,20 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const cutoff = new Date();
     if (duration === '6m') cutoff.setMonth(cutoff.getMonth() - 6);
     else if (duration === '1y') cutoff.setFullYear(cutoff.getFullYear() - 1);
+    const cutoffIso = cutoff.toISOString();
     
-    const ordersToDelete = orders.filter(o => o.restaurant_id === id && new Date(o.created_at) < cutoff);
-    if (ordersToDelete.length === 0) return 0;
-    
+    // Fetch directly from Supabase for orders older than cutoff
+    const { data: dbOldOrders, error: fetchErr } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('restaurant_id', id)
+      .lt('created_at', cutoffIso);
+
+    if (fetchErr || !dbOldOrders || dbOldOrders.length === 0) {
+      return 0;
+    }
+
+    const ordersToDelete = dbOldOrders;
     let revenueToArchive = 0;
     const yearlyArchiveMap: Record<string, number> = {};
     
@@ -4195,23 +4242,14 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
         mergedYearlyMap[y] = (mergedYearlyMap[y] || 0) + amt;
     }
     
-    const batchSize = 1000;
-    for (let i = 0; i < ordersToDelete.length; i+= batchSize) {
-        const batchIds = ordersToDelete.slice(i, i+batchSize).map(o => o.id);
-        
-        const itemsToDelete = [];
-        for (const orderId of batchIds) {
-           const items = await supabase.from('order_items').select('id').eq('order_id', orderId);
-           if (items.data) itemsToDelete.push(...items.data.map(item => item.id));
-        }
-        
-        if (itemsToDelete.length > 0) {
-           for (let j = 0; j < itemsToDelete.length; j+= batchSize) {
-               await supabase.from('order_items').delete().in('id', itemsToDelete.slice(j, j+batchSize));
-           }
-        }
-        
-        await supabase.from('orders').delete().in('id', batchIds);
+    const oldOrderIds = ordersToDelete.map(o => o.id);
+    for (let i = 0; i < oldOrderIds.length; i += 100) {
+      const chunk = oldOrderIds.slice(i, i + 100);
+      await supabase.from('order_items').delete().in('order_id', chunk);
+    }
+    for (let i = 0; i < oldOrderIds.length; i += 100) {
+      const chunk = oldOrderIds.slice(i, i + 100);
+      await supabase.from('orders').delete().in('id', chunk);
     }
     
     await updateRestaurant(id, { 
@@ -4220,20 +4258,94 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
         archived_revenue_by_year: mergedYearlyMap
     });
     
-    logAudit({
-      restaurant_id: id,
-      actor_type: 'ceo',
-      actor_id: 'ceo',
-      actor_name: 'CEO SuperAdmin',
-      actor_role: 'ceo',
-      action: 'DELETE_OLD_DATA',
-      description: `CEO permanently deleted ${ordersToDelete.length} orders older than ${duration}. Revenue totals preserved in archive.`
-    });
-
-    fetchAllFromSupabase().catch(e => console.error("BG fetch error:", e));
+    setOrders(prev => prev.filter(o => !oldOrderIds.includes(o.id)));
+    await fetchAllFromSupabase(true);
     return ordersToDelete.length;
   };
 
+  // 1. Surgical clear of all orders & operational data (Orders, Items, Feedback, Call Waiter, Sessions)
+  const clearRestaurantData = async (id: string): Promise<boolean> => {
+    try {
+      // Direct query from Supabase to get ALL order IDs for this restaurant
+      const { data: dbOrders } = await supabase
+        .from('orders')
+        .select('id')
+        .eq('restaurant_id', id);
+
+      const orderIds = (dbOrders || []).map(o => o.id);
+      if (orderIds.length > 0) {
+        for (let i = 0; i < orderIds.length; i += 100) {
+          const chunk = orderIds.slice(i, i + 100);
+          await supabase.from('order_items').delete().in('order_id', chunk);
+        }
+        for (let i = 0; i < orderIds.length; i += 100) {
+          const chunk = orderIds.slice(i, i + 100);
+          await supabase.from('orders').delete().in('id', chunk);
+        }
+      }
+
+      await supabase.from('customer_feedback').delete().eq('restaurant_id', id);
+      await supabase.from('call_waiter').delete().eq('restaurant_id', id);
+      await supabase.from('table_sessions').delete().eq('restaurant_id', id);
+      await supabase.from('payment_transactions').delete().eq('restaurant_id', id);
+
+      // Reset all tables to available
+      await supabase.from('tables').update({ status: 'available', current_session_id: null }).eq('restaurant_id', id);
+
+      // Reset archived revenue counters
+      await updateRestaurant(id, {
+        archived_revenue: 0,
+        archived_orders_count: 0,
+        archived_revenue_by_year: {}
+      });
+
+      // Optimistic state updates
+      setOrders(prev => prev.filter(o => o.restaurant_id !== id));
+      knownOrderIdsRef.current = new Set(
+        Array.from(knownOrderIdsRef.current).filter(orderId => !orderIds.includes(orderId))
+      );
+      setFeedbackList(prev => prev.filter(f => f.restaurant_id !== id));
+      setCallRequests(prev => prev.filter(c => c.restaurant_id !== id));
+      setTableSessions(prev => prev.filter(s => s.restaurant_id !== id));
+      setTables(prev => prev.map(t => t.restaurant_id === id ? { ...t, status: 'available', current_session_id: null } : t));
+
+      if (currentOwner?.id === id) {
+        const resetOwner = {
+          ...currentOwner,
+          archived_revenue: 0,
+          archived_orders_count: 0,
+          archived_revenue_by_year: {}
+        };
+        setCurrentOwner(resetOwner);
+        sessionStorage.setItem('digimoms_current_owner', JSON.stringify(resetOwner));
+        localStorage.setItem('digimoms_current_owner', JSON.stringify(resetOwner));
+      }
+
+      logAudit({
+        restaurant_id: id,
+        actor_type: 'ceo',
+        actor_id: 'ceo',
+        actor_name: 'CEO SuperAdmin',
+        actor_role: 'ceo',
+        action: 'CLEAR_RESTAURANT_DATA',
+        description: `Cleared all operational data and orders for restaurant (${orderIds.length} orders removed).`
+      });
+
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('digimoms_data_cleared', { detail: { restaurantId: id } }));
+      }
+      broadcastRealtimeEvent('order_status_event', { restaurant_id: id, action: 'CLEARED' });
+      await fetchAllFromSupabase(true);
+      showToast('All order records & customer operational data cleared successfully!', 'success');
+      return true;
+    } catch (e: any) {
+      console.error("Clear restaurant data error:", e);
+      showToast(`Data clear failed: ${e.message}`, 'error');
+      return false;
+    }
+  };
+
+  // 2. Full Factory Reset: Wipes EVERYTHING for the restaurant (Orders, Menu Items, Categories, Staff, Tables, Sessions, Analytics)
   const factoryResetRestaurant = async (id: string, ceoPass: string): Promise<boolean> => {
     const envPass = (import.meta as any).env?.CEO_BOOTSTRAP_PASSWORD || 'Swastika4945@';
     if (ceoPass !== envPass && ceoPass !== 'Swastika4945@') {
@@ -4242,22 +4354,112 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     try {
-      const restOrders = orders.filter(o => o.restaurant_id === id);
-      if (restOrders.length > 0) {
-        await supabase.from('order_items').delete().in('order_id', restOrders.map(o => o.id));
+      // 1. Fetch & delete ALL order_items and orders directly in Supabase
+      const { data: dbOrders } = await supabase
+        .from('orders')
+        .select('id')
+        .eq('restaurant_id', id);
+
+      const orderIds = (dbOrders || []).map(o => o.id);
+      if (orderIds.length > 0) {
+        for (let i = 0; i < orderIds.length; i += 100) {
+          const chunk = orderIds.slice(i, i + 100);
+          await supabase.from('order_items').delete().in('order_id', chunk);
+        }
+        for (let i = 0; i < orderIds.length; i += 100) {
+          const chunk = orderIds.slice(i, i + 100);
+          await supabase.from('orders').delete().in('id', chunk);
+        }
       }
-      await supabase.from('orders').delete().eq('restaurant_id', id);
+
+      // 2. Delete Menu items and categories from Supabase
+      await supabase.from('menus').delete().eq('restaurant_id', id);
+      await supabase.from('menu_categories').delete().eq('restaurant_id', id);
+
+      // 3. Delete Feedback, Call Waiter, Table Sessions, Transactions, Audit Logs
       await supabase.from('customer_feedback').delete().eq('restaurant_id', id);
       await supabase.from('call_waiter').delete().eq('restaurant_id', id);
-      await supabase.from('tables').update({ status: 'available' }).eq('restaurant_id', id);
-      await supabase.from('table_sessions').update({ status: 'closed' }).eq('restaurant_id', id);
-    } catch (e) {
-      console.warn("Factory reset error:", e);
-    }
+      await supabase.from('table_sessions').delete().eq('restaurant_id', id);
+      await supabase.from('payment_transactions').delete().eq('restaurant_id', id);
+      await supabase.from('audit_logs').delete().eq('restaurant_id', id);
 
-    fetchAllFromSupabase().catch(e => console.error("BG fetch error:", e));
-    showToast('Factory reset executed! Orders and call logs cleared for this restaurant.', 'success');
-    return true;
+      // 4. Delete custom staff accounts
+      await supabase.from('staff').delete().eq('restaurant_id', id);
+
+      // 5. Reset tables to standard 4 factory default tables
+      await supabase.from('tables').delete().eq('restaurant_id', id);
+      const defaultTables = [
+        { id: crypto.randomUUID(), restaurant_id: id, table_number: 1, capacity: 4, status: 'available' },
+        { id: crypto.randomUUID(), restaurant_id: id, table_number: 2, capacity: 4, status: 'available' },
+        { id: crypto.randomUUID(), restaurant_id: id, table_number: 3, capacity: 4, status: 'available' },
+        { id: crypto.randomUUID(), restaurant_id: id, table_number: 4, capacity: 4, status: 'available' }
+      ];
+      await supabase.from('tables').insert(defaultTables);
+
+      // 6. Reset restaurant archived revenue stats
+      await updateRestaurant(id, {
+        archived_revenue: 0,
+        archived_orders_count: 0,
+        archived_revenue_by_year: {}
+      });
+
+      // 7. Clear local overrides
+      try {
+        const raw = localStorage.getItem('digimoms_restaurant_overrides');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          delete parsed[id];
+          localStorage.setItem('digimoms_restaurant_overrides', JSON.stringify(parsed));
+        }
+      } catch {}
+
+      // 8. Optimistic local state wipe
+      setOrders(prev => prev.filter(o => o.restaurant_id !== id));
+      knownOrderIdsRef.current = new Set(
+        Array.from(knownOrderIdsRef.current).filter(orderId => !orderIds.includes(orderId))
+      );
+      setMenuItems(prev => prev.filter(m => m.restaurant_id !== id));
+      setCategories(prev => prev.filter(c => c.restaurant_id !== id));
+      setStaffList(prev => prev.filter(s => s.restaurant_id !== id));
+      setFeedbackList(prev => prev.filter(f => f.restaurant_id !== id));
+      setCallRequests(prev => prev.filter(c => c.restaurant_id !== id));
+      setTableSessions(prev => prev.filter(s => s.restaurant_id !== id));
+      setTables(prev => [...prev.filter(t => t.restaurant_id !== id), ...defaultTables as any]);
+
+      if (currentOwner?.id === id) {
+        const resetOwner = {
+          ...currentOwner,
+          archived_revenue: 0,
+          archived_orders_count: 0,
+          archived_revenue_by_year: {}
+        };
+        setCurrentOwner(resetOwner);
+        sessionStorage.setItem('digimoms_current_owner', JSON.stringify(resetOwner));
+        localStorage.setItem('digimoms_current_owner', JSON.stringify(resetOwner));
+      }
+
+      logAudit({
+        restaurant_id: id,
+        actor_type: 'ceo',
+        actor_id: 'ceo',
+        actor_name: 'CEO SuperAdmin',
+        actor_role: 'ceo',
+        action: 'FACTORY_RESET',
+        description: 'Complete factory reset executed. All menus, orders, categories, staff, and tables restored to fresh baseline.'
+      });
+
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('digimoms_data_cleared', { detail: { restaurantId: id } }));
+      }
+      broadcastRealtimeEvent('order_status_event', { restaurant_id: id, action: 'FACTORY_RESET' });
+      await fetchAllFromSupabase(true);
+      showToast('🎉 Factory Reset Complete! Restaurant has been restored to factory baseline.', 'success');
+      return true;
+    } catch (e: any) {
+      console.error("Factory reset error:", e);
+      showToast(`Factory reset failed: ${e.message}`, 'error');
+      return false;
+    }
   };
 
   const executeProductionReset = async (ceoPassword?: string): Promise<boolean> => {
@@ -7294,7 +7496,7 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
       paymentTransactions, confirmCashPayment, processRazorpayOnlinePayment, processPayUOnlinePayment, processPhonePeOnlinePayment, updateOrderPaymentMethod,
       loginCeo, loginCeoStaffMember, logoutCeo, ceoRazorpayConfig, updateCeoRazorpayConfig, ceoPaymentConfig, updateCeoPaymentConfig,
       addRestaurant, updateRestaurant, suspendRestaurant,
-      resumeRestaurant, grantTrial, endTrial, extendTrial, grantFreeOffer, endFreeOffer, extendFreeOffer, grantFreeExtension, grantFreePlan, grantFreeDays, renewSubscription, renewRestaurantMonthly, archiveRestaurant, deleteRestaurantPermanently, deleteOldRestaurantData,
+      resumeRestaurant, grantTrial, endTrial, extendTrial, grantFreeOffer, endFreeOffer, extendFreeOffer, grantFreeExtension, grantFreePlan, grantFreeDays, renewSubscription, renewRestaurantMonthly, archiveRestaurant, deleteRestaurantPermanently, deleteOldRestaurantData, clearRestaurantData,
       factoryResetRestaurant, executeProductionReset, updateCommissionStatus, loginOwner, logoutOwner, updateOwnerProfile, updateOwnerPassword,
       addCategory, updateCategory, addMenuItem, updateMenuItem, toggleMenuItemAvailability,
       addTable, clearTableSession, addStaffMember, toggleStaffStatus, deleteStaffMember, updateStaffPassword,
