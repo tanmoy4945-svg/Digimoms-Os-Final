@@ -4,7 +4,7 @@ import { SmartImage } from '../common/SmartImage';
 import {
   Building2, Plus, Search, ShieldCheck, DollarSign, Calendar,
   AlertTriangle, RefreshCw, Archive, RotateCcw, Power, Eye, LogOut,
-  Database, Star, FileText, Phone, CreditCard, Edit3, Settings, Sparkles, CheckCircle2, Trash2, Loader2, Globe, Gift, History, Users, Lock
+  Database, Star, FileText, Phone, CreditCard, Edit3, Settings, Sparkles, CheckCircle2, Trash2, Loader2, Globe, Gift, History, Users, Lock, Clock
 } from 'lucide-react';
 import { SqlSchemaViewer } from './SqlSchemaViewer';
 import { CeoPaymentSettings } from './CeoPaymentSettings';
@@ -95,6 +95,7 @@ export const CeoDashboard: React.FC = () => {
     deleteRestaurantPermanently,
     deleteOldRestaurantData,
     clearRestaurantData,
+    deleteRestaurantDataByTime,
     factoryResetRestaurant,
     executeProductionReset,
     logoutCeo,
@@ -1742,32 +1743,37 @@ export const CeoDashboard: React.FC = () => {
             <div className="flex items-center gap-3 text-rose-400">
               <AlertTriangle className="w-8 h-8 shrink-0" />
               <div>
-                <h3 className="text-lg font-bold text-white">Danger Zone: Full Factory Reset</h3>
-                <p className="text-[11px] text-rose-300">Complete restaurant wipeout & factory baseline restore</p>
+                <h3 className="text-lg font-bold text-white">Full Factory Reset (ফোন রিসেটের মতো)</h3>
+                <p className="text-[11px] text-rose-300">Wipe all contents & restore to clean factory baseline</p>
               </div>
             </div>
             <div className="p-3 bg-rose-950/30 border border-rose-500/30 rounded-xl space-y-2 text-xs text-rose-200">
-              <p className="font-semibold text-rose-300">This action will permanently delete:</p>
+              <p className="font-semibold text-rose-300">📱 Mobile Phone Factory Reset Analogy:</p>
+              <p className="text-[11px] text-slate-300 leading-relaxed">
+                মোবাইল রিসেট করলে যেমন হ্যান্ডসেটের মডেল অক্ষত থাকে, তেমনি রেস্তোরাঁর মূল অ্যাকাউন্ট (Name, Mobile, Password, Subscription Plan) ঠিক থাকবে। কিন্তু ভিতরের সমস্ত ডাটা সরাসরি মুছে ফ্যাক্টরি ডিফল্টে ফিরে যাবে:
+              </p>
               <ul className="list-disc ml-4 text-[11px] text-slate-300 space-y-1">
-                <li><strong className="text-rose-200">All Live & Completed Orders</strong> & order items</li>
-                <li><strong className="text-rose-200">All Menu Items & Categories</strong></li>
-                <li><strong className="text-rose-200">All Custom Staff Accounts</strong></li>
-                <li><strong className="text-rose-200">All Customer Feedback & Waiter Calls</strong></li>
-                <li><strong className="text-rose-200">Restore Tables to Factory Default</strong> (Tables 1–4)</li>
+                <li><strong className="text-rose-200">All Orders & Bills</strong> (সমস্ত অর্ডার ও হিসেব ডিলিট হবে)</li>
+                <li><strong className="text-rose-200">All Menus & Custom Items</strong> (মেনু আইটেম সম্পূর্ণ ক্লিয়ার হবে)</li>
+                <li><strong className="text-rose-200">All Custom Staff Accounts</strong> (স্টাফদের অ্যাকাউন্ট মুছে যাবে)</li>
+                <li><strong className="text-rose-200">All Feedback, Calls & Sessions</strong> (ফিডব্যাক ও কল হিস্ট্রি মুছবে)</li>
+                <li><strong className="text-rose-200">Tables Restored to 1–4</strong> (টেবিল ১-৪ ডিফল্ট উপলব্ধ হবে)</li>
               </ul>
-              <p className="text-[10px] text-emerald-400 font-medium">✓ Restaurant login credentials & subscription status will remain intact.</p>
+              <p className="text-[10px] text-emerald-400 font-medium pt-1">✓ Supabase ডাটাবেজ সরাসরি আপডেট হবে, নতুন ব্রাউজারে ডাটা ফিরে আসবে না।</p>
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">Re-enter CEO Password</label>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                নিশ্চিত করতে <span className="text-rose-400 font-mono font-bold">RESET</span> লিখুন অথবা CEO পাসওয়ার্ড দিন:
+              </label>
               <input
-                type="password"
+                type="text"
                 required
                 disabled={isResetting}
-                placeholder="Enter CEO password to confirm"
+                placeholder="Type RESET or CEO password to confirm"
                 value={resetPasswordInput}
                 onChange={(e) => setResetPasswordInput(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-white outline-none focus:border-rose-500 disabled:opacity-50"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-white outline-none focus:border-rose-500 disabled:opacity-50 font-medium"
               />
             </div>
 
@@ -2110,26 +2116,30 @@ export const CeoDashboard: React.FC = () => {
             </div>
 
             <div className="space-y-4">
-              {/* PRIMARY: CLEAR ALL ORDERS & LIVE OPERATIONAL DATA */}
-              <div className="p-4 bg-red-950/20 border border-red-500/30 rounded-2xl space-y-3">
+              {/* PRIMARY: ALL TIME DATA CLEAR */}
+              <div className="p-4 bg-red-950/30 border border-red-500/40 rounded-2xl space-y-3">
                 <div className="flex gap-2.5">
                   <Trash2 className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
                   <div>
-                    <h4 className="text-xs font-bold text-white">Clear All Orders & Operational Data</h4>
+                    <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <span>Clear ALL TIME Data</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-900/60 text-red-300 font-normal">সব সময়ের সমস্ত ডাটা</span>
+                    </h4>
                     <p className="text-[11px] text-slate-300 mt-0.5">
-                      Instantly wipe all orders, bills, customer feedback, active table sessions, and call waiter requests. Menu items, categories, and staff accounts will remain untouched.
+                      রেস্তোরাঁর শুরু থেকে আজ পর্যন্ত সমস্ত অর্ডার, বিল, হিসেব, কাস্টমার ফিডব্যাক ও টেবিল সেশন ডাটাবেজ থেকে স্থায়ীভাবে মুছে যাবে। মেনু আইটেম ও স্টাফ অক্ষত থাকবে।
                     </p>
                   </div>
                 </div>
                 <button
                   onClick={async () => {
-                    if (!window.confirm(`Are you sure you want to completely clear all orders and operational data for "${showDataModal.name}"? This cannot be undone.`)) return;
+                    if (!window.confirm(`Are you sure you want to completely wipe ALL TIME orders & operational data for "${showDataModal.name}"? This cannot be undone.`)) return;
                     setIsDeletingData(true);
                     try {
-                      const ok = await clearRestaurantData(showDataModal.id);
-                      if (ok) {
-                        setShowDataModal(null);
-                      }
+                      const count = await deleteRestaurantDataByTime(showDataModal.id, 'all');
+                      showToast(`Successfully wiped all data (${count} orders deleted) from Supabase!`, 'success');
+                      setShowDataModal(null);
+                    } catch (e: any) {
+                      showToast(e.message || 'Error deleting data', 'error');
                     } finally {
                       setIsDeletingData(false);
                     }
@@ -2138,27 +2148,31 @@ export const CeoDashboard: React.FC = () => {
                   className="w-full py-2.5 px-4 bg-red-600 hover:bg-red-500 rounded-xl text-xs font-bold text-white flex items-center justify-center gap-2 shadow-lg shadow-red-600/30 transition-all disabled:opacity-50 cursor-pointer"
                 >
                   {isDeletingData ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
-                  <span>Clear All Live Orders & Data Now</span>
+                  <span>Wipe All Time Data (সব সময়ের ডাটা ডিলিট)</span>
                 </button>
               </div>
 
-              {/* SECONDARY: DATA DELETION / ARCHIVE POLICY */}
-              <div className="p-4 bg-slate-800/50 border border-slate-700/60 rounded-2xl space-y-3">
+              {/* SECONDARY: TIME RANGE BASED DELETIONS */}
+              <div className="p-4 bg-slate-800/60 border border-slate-700 rounded-2xl space-y-3">
                 <div className="flex gap-2">
-                  <AlertTriangle className="w-4 h-4 text-orange-400 shrink-0 mt-0.5" />
-                  <div className="text-xs text-slate-300">
-                    <p className="font-semibold text-white mb-0.5">Scheduled Periodic Archive Policy</p>
-                    <p className="text-[10px] text-slate-400">Archive orders older than 6 to 12 months per Service Agreement while preserving lifetime revenue counters:</p>
+                  <Clock className="w-4 h-4 text-orange-400 shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="text-xs font-bold text-white">Delete by Specific Time Period (সময় অনুযায়ী ডাটা ক্লিয়ার)</h4>
+                    <p className="text-[10px] text-slate-400 mt-0.5">
+                      নির্দিষ্ট সময়সীমার ভেতরের অর্ডার ও হিসেব সরাসরি Supabase ডাটাবেজ থেকে মুছে ফেলা হবে:
+                    </p>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-3 gap-2.5">
+                  {/* Today */}
                   <button
                     onClick={async () => {
+                      if (!window.confirm(`Delete today's orders & sales for "${showDataModal.name}"?`)) return;
                       setIsDeletingData(true);
                       try {
-                        const count = await deleteOldRestaurantData(showDataModal.id, '6m');
-                        showToast(`Successfully archived ${count} orders older than 6 months.`, 'success');
+                        const count = await deleteRestaurantDataByTime(showDataModal.id, 'today');
+                        showToast(`Deleted ${count} orders from today.`, 'success');
                         setShowDataModal(null);
                       } catch (e: any) {
                         showToast(e.message || 'Error deleting data', 'error');
@@ -2167,17 +2181,20 @@ export const CeoDashboard: React.FC = () => {
                       }
                     }}
                     disabled={isDeletingData}
-                    className="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 rounded-xl text-[11px] font-bold text-slate-200 flex flex-col items-center justify-center gap-1 border border-slate-700 transition-colors disabled:opacity-50 cursor-pointer"
+                    className="py-2 px-2.5 bg-slate-800 hover:bg-slate-700 rounded-xl text-[11px] font-semibold text-slate-200 flex flex-col items-center justify-center gap-1 border border-slate-700 transition-colors disabled:opacity-50 cursor-pointer"
                   >
-                    {isDeletingData ? <Loader2 className="w-4 h-4 animate-spin text-orange-400" /> : <Trash2 className="w-4 h-4 text-orange-400" />}
-                    <span>Archive &gt; 6 Months Data</span>
+                    <span className="text-orange-400 font-bold">Today</span>
+                    <span className="text-[9px] text-slate-400">আজকের ডাটা</span>
                   </button>
+
+                  {/* Last 7 Days */}
                   <button
                     onClick={async () => {
+                      if (!window.confirm(`Delete last 7 days orders & sales for "${showDataModal.name}"?`)) return;
                       setIsDeletingData(true);
                       try {
-                        const count = await deleteOldRestaurantData(showDataModal.id, '1y');
-                        showToast(`Successfully archived ${count} orders older than 1 year.`, 'success');
+                        const count = await deleteRestaurantDataByTime(showDataModal.id, '7d');
+                        showToast(`Deleted ${count} orders from last 7 days.`, 'success');
                         setShowDataModal(null);
                       } catch (e: any) {
                         showToast(e.message || 'Error deleting data', 'error');
@@ -2186,10 +2203,78 @@ export const CeoDashboard: React.FC = () => {
                       }
                     }}
                     disabled={isDeletingData}
-                    className="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 rounded-xl text-[11px] font-bold text-slate-200 flex flex-col items-center justify-center gap-1 border border-slate-700 transition-colors disabled:opacity-50 cursor-pointer"
+                    className="py-2 px-2.5 bg-slate-800 hover:bg-slate-700 rounded-xl text-[11px] font-semibold text-slate-200 flex flex-col items-center justify-center gap-1 border border-slate-700 transition-colors disabled:opacity-50 cursor-pointer"
                   >
-                    {isDeletingData ? <Loader2 className="w-4 h-4 animate-spin text-orange-400" /> : <Archive className="w-4 h-4 text-orange-400" />}
-                    <span>Archive &gt; 1 Year Data</span>
+                    <span className="text-orange-400 font-bold">Last 7 Days</span>
+                    <span className="text-[9px] text-slate-400">গত ৭ দিনের ডাটা</span>
+                  </button>
+
+                  {/* Last 30 Days */}
+                  <button
+                    onClick={async () => {
+                      if (!window.confirm(`Delete last 30 days orders & sales for "${showDataModal.name}"?`)) return;
+                      setIsDeletingData(true);
+                      try {
+                        const count = await deleteRestaurantDataByTime(showDataModal.id, '30d');
+                        showToast(`Deleted ${count} orders from last 30 days.`, 'success');
+                        setShowDataModal(null);
+                      } catch (e: any) {
+                        showToast(e.message || 'Error deleting data', 'error');
+                      } finally {
+                        setIsDeletingData(false);
+                      }
+                    }}
+                    disabled={isDeletingData}
+                    className="py-2 px-2.5 bg-slate-800 hover:bg-slate-700 rounded-xl text-[11px] font-semibold text-slate-200 flex flex-col items-center justify-center gap-1 border border-slate-700 transition-colors disabled:opacity-50 cursor-pointer"
+                  >
+                    <span className="text-orange-400 font-bold">Last 30 Days</span>
+                    <span className="text-[9px] text-slate-400">গত ১ মাসের ডাটা</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2.5 pt-1">
+                  {/* Older than 6 Months */}
+                  <button
+                    onClick={async () => {
+                      if (!window.confirm(`Archive and delete orders older than 6 months for "${showDataModal.name}"?`)) return;
+                      setIsDeletingData(true);
+                      try {
+                        const count = await deleteRestaurantDataByTime(showDataModal.id, '6m');
+                        showToast(`Archived & deleted ${count} orders older than 6 months.`, 'success');
+                        setShowDataModal(null);
+                      } catch (e: any) {
+                        showToast(e.message || 'Error deleting data', 'error');
+                      } finally {
+                        setIsDeletingData(false);
+                      }
+                    }}
+                    disabled={isDeletingData}
+                    className="py-2 px-3 bg-slate-800 hover:bg-slate-700 rounded-xl text-[11px] font-semibold text-slate-200 flex flex-col items-center justify-center gap-0.5 border border-slate-700 transition-colors disabled:opacity-50 cursor-pointer"
+                  >
+                    <span className="text-amber-400 font-bold">Older &gt; 6 Months</span>
+                    <span className="text-[9px] text-slate-400">&gt; ৬ মাসের পুরানো ডাটা</span>
+                  </button>
+
+                  {/* Older than 1 Year */}
+                  <button
+                    onClick={async () => {
+                      if (!window.confirm(`Archive and delete orders older than 1 year for "${showDataModal.name}"?`)) return;
+                      setIsDeletingData(true);
+                      try {
+                        const count = await deleteRestaurantDataByTime(showDataModal.id, '1y');
+                        showToast(`Archived & deleted ${count} orders older than 1 year.`, 'success');
+                        setShowDataModal(null);
+                      } catch (e: any) {
+                        showToast(e.message || 'Error deleting data', 'error');
+                      } finally {
+                        setIsDeletingData(false);
+                      }
+                    }}
+                    disabled={isDeletingData}
+                    className="py-2 px-3 bg-slate-800 hover:bg-slate-700 rounded-xl text-[11px] font-semibold text-slate-200 flex flex-col items-center justify-center gap-0.5 border border-slate-700 transition-colors disabled:opacity-50 cursor-pointer"
+                  >
+                    <span className="text-amber-400 font-bold">Older &gt; 1 Year</span>
+                    <span className="text-[9px] text-slate-400">&gt; ১ বছরের পুরানো ডাটা</span>
                   </button>
                 </div>
               </div>
