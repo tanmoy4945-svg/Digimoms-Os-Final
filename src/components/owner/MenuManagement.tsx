@@ -8,7 +8,18 @@ import { CompressedImageUploader } from '../common/CompressedImageUploader';
 import { FoodImageModal } from '../common/FoodImageModal';
 
 export const MenuManagement: React.FC = () => {
-  const { currentOwner, categories, menuItems, addCategory, addMenuItem, updateMenuItem, toggleMenuItemAvailability } = useSaaS();
+  const {
+    currentOwner,
+    categories,
+    menuItems,
+    addCategory,
+    updateCategory,
+    deleteCategory,
+    addMenuItem,
+    updateMenuItem,
+    deleteMenuItem,
+    toggleMenuItemAvailability
+  } = useSaaS();
 
   const [newCatName, setNewCatName] = useState('');
   const [showCatModal, setShowCatModal] = useState(false);
@@ -17,6 +28,11 @@ export const MenuManagement: React.FC = () => {
   const [fullScreenImageItem, setFullScreenImageItem] = useState<MenuItem | null>(null);
 
   const [isValidatingImage, setIsValidatingImage] = useState(false);
+  const [isSavingCat, setIsSavingCat] = useState(false);
+  const [isSavingDish, setIsSavingDish] = useState(false);
+  const [deletingDishId, setDeletingDishId] = useState<string | null>(null);
+  const [deletingCatId, setDeletingCatId] = useState<string | null>(null);
+  const [selectedCatFilter, setSelectedCatFilter] = useState<string>('all');
   const [dishImageError, setDishImageError] = useState<string | null>(null);
 
   const [dishForm, setDishForm] = useState({
@@ -36,11 +52,19 @@ export const MenuManagement: React.FC = () => {
 
   const restCategories = categories.filter(c => c.restaurant_id === currentOwner.id);
   const restMenu = menuItems.filter(m => m.restaurant_id === currentOwner.id);
+  const displayedMenu = selectedCatFilter === 'all'
+    ? restMenu
+    : restMenu.filter(m => m.category_id === selectedCatFilter);
 
-  const handleAddCat = (e: React.FormEvent) => {
+  const handleAddCat = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (newCatName.trim()) {
-      addCategory(newCatName.trim());
+    const cleanName = newCatName.trim();
+    if (!cleanName) return;
+
+    setIsSavingCat(true);
+    const success = await addCategory(cleanName);
+    setIsSavingCat(false);
+    if (success) {
       setNewCatName('');
       setShowCatModal(false);
     }
@@ -62,48 +86,62 @@ export const MenuManagement: React.FC = () => {
       imageUrl = res.normalizedUrl;
     }
 
-    const catId = dishForm.category_id || (restCategories[0]?.id || '');
-
-    if (editingItem) {
-      await updateMenuItem(editingItem.id, {
-        name: dishForm.name,
-        category_id: catId,
-        description: dishForm.description,
-        price: Number(dishForm.price),
-        image_url: imageUrl,
-        prep_time: Number(dishForm.prep_time),
-        is_veg: dishForm.is_veg,
-        is_popular: dishForm.is_popular,
-        is_recommended: dishForm.is_recommended,
-        spicy_level: Number(dishForm.spicy_level)
-      });
-    } else {
-      await addMenuItem({
-        name: dishForm.name,
-        category_id: catId,
-        description: dishForm.description,
-        price: Number(dishForm.price),
-        image_url: imageUrl,
-        prep_time: Number(dishForm.prep_time),
-        is_veg: dishForm.is_veg,
-        is_available: true,
-        is_popular: dishForm.is_popular,
-        is_recommended: dishForm.is_recommended,
-        spicy_level: Number(dishForm.spicy_level),
-        sort_order: restMenu.length + 1
-      });
+    let catId = dishForm.category_id || (restCategories[0]?.id || '');
+    if (!catId && restCategories.length === 0) {
+      // Auto-create a default category if none exists
+      await addCategory('General');
+      const freshCat = categories.find(c => c.restaurant_id === currentOwner.id);
+      if (freshCat) catId = freshCat.id;
     }
 
-    setIsValidatingImage(false);
-    setShowDishModal(false);
-    setEditingItem(null);
+    setIsSavingDish(true);
+    try {
+      let success = false;
+      if (editingItem) {
+        success = await updateMenuItem(editingItem.id, {
+          name: dishForm.name.trim(),
+          category_id: catId || undefined,
+          description: dishForm.description.trim(),
+          price: Number(dishForm.price),
+          image_url: imageUrl,
+          prep_time: Number(dishForm.prep_time) || 15,
+          is_veg: dishForm.is_veg,
+          is_popular: dishForm.is_popular,
+          is_recommended: dishForm.is_recommended,
+          spicy_level: Number(dishForm.spicy_level) || 0
+        });
+      } else {
+        success = await addMenuItem({
+          name: dishForm.name.trim(),
+          category_id: catId,
+          description: dishForm.description.trim(),
+          price: Number(dishForm.price),
+          image_url: imageUrl,
+          prep_time: Number(dishForm.prep_time) || 15,
+          is_veg: dishForm.is_veg,
+          is_available: true,
+          is_popular: dishForm.is_popular,
+          is_recommended: dishForm.is_recommended,
+          spicy_level: Number(dishForm.spicy_level) || 0,
+          sort_order: restMenu.length + 1
+        });
+      }
+
+      if (success) {
+        setShowDishModal(false);
+        setEditingItem(null);
+      }
+    } finally {
+      setIsSavingDish(false);
+      setIsValidatingImage(false);
+    }
   };
 
   const openEditModal = (item: MenuItem) => {
     setEditingItem(item);
     setDishForm({
       name: item.name,
-      category_id: item.category_id,
+      category_id: item.category_id || (restCategories[0]?.id || ''),
       description: item.description,
       price: item.price,
       image_url: item.image_url,
@@ -158,12 +196,48 @@ export const MenuManagement: React.FC = () => {
 
       {/* Categories Bar */}
       <div className="flex items-center gap-2 overflow-x-auto pb-2 custom-scrollbar">
+        <button
+          onClick={() => setSelectedCatFilter('all')}
+          className={`px-3.5 py-1.5 rounded-xl border text-xs font-semibold shrink-0 transition-all ${
+            selectedCatFilter === 'all'
+              ? 'bg-emerald-600 text-white border-emerald-500 shadow-md shadow-emerald-600/30'
+              : 'bg-slate-900 border-slate-800 text-slate-300 hover:bg-slate-800'
+          }`}
+        >
+          All Items ({restMenu.length})
+        </button>
+
         {restCategories.map(cat => (
-          <div key={cat.id} className="px-3.5 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs font-semibold text-slate-300 flex items-center gap-2 shrink-0">
-            <span>{cat.name}</span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-800 text-slate-400">
-              {restMenu.filter(m => m.category_id === cat.id).length}
-            </span>
+          <div key={cat.id} className="relative group shrink-0">
+            <button
+              onClick={() => setSelectedCatFilter(cat.id)}
+              className={`px-3.5 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-2 transition-all ${
+                selectedCatFilter === cat.id
+                  ? 'bg-emerald-600 text-white border-emerald-500 shadow-md shadow-emerald-600/30'
+                  : 'bg-slate-900 border-slate-800 text-slate-300 hover:bg-slate-800'
+              }`}
+            >
+              <span>{cat.name}</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-800/80 text-slate-300">
+                {restMenu.filter(m => m.category_id === cat.id).length}
+              </span>
+            </button>
+            <button
+              title={`Delete Category ${cat.name}`}
+              disabled={deletingCatId === cat.id}
+              onClick={async (e) => {
+                e.stopPropagation();
+                if (window.confirm(`Are you sure you want to delete category "${cat.name}" and all associated dishes?`)) {
+                  setDeletingCatId(cat.id);
+                  await deleteCategory(cat.id);
+                  setDeletingCatId(null);
+                  if (selectedCatFilter === cat.id) setSelectedCatFilter('all');
+                }
+              }}
+              className="absolute -top-1.5 -right-1.5 hidden group-hover:flex w-5 h-5 rounded-full bg-rose-600 hover:bg-rose-500 text-white items-center justify-center text-xs shadow-md border border-slate-900 z-10 transition-transform active:scale-90"
+            >
+              {deletingCatId === cat.id ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : '×'}
+            </button>
           </div>
         ))}
       </div>
@@ -184,69 +258,99 @@ export const MenuManagement: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60">
-              {restMenu.map(dish => {
-                const cat = restCategories.find(c => c.id === dish.category_id);
-                return (
-                  <tr key={dish.id} className="hover:bg-slate-800/40 transition-all">
-                    <td className="p-4">
-                      <div className="flex items-center gap-3">
-                        <div
-                          onClick={() => setFullScreenImageItem(dish)}
-                          className="relative group cursor-pointer w-11 h-11 rounded-xl overflow-hidden border border-slate-800 shrink-0"
-                          title="Click to view full screen photo"
-                        >
-                          <SmartImage src={dish.image_url} alt={dish.name} className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-110" />
-                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                            <Maximize2 className="w-3.5 h-3.5 text-white" />
+              {displayedMenu.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="p-12 text-center text-slate-400">
+                    <Utensils className="w-10 h-10 mx-auto text-slate-600 mb-3" />
+                    <p className="font-semibold text-sm text-slate-300">No dishes found in this category.</p>
+                    <p className="text-xs text-slate-500 mt-1">Click &ldquo;Add New Dish&rdquo; to add items to your digital menu.</p>
+                  </td>
+                </tr>
+              ) : (
+                displayedMenu.map(dish => {
+                  const cat = restCategories.find(c => c.id === dish.category_id);
+                  return (
+                    <tr key={dish.id} className="hover:bg-slate-800/40 transition-all">
+                      <td className="p-4">
+                        <div className="flex items-center gap-3">
+                          <div
+                            onClick={() => setFullScreenImageItem(dish)}
+                            className="relative group cursor-pointer w-11 h-11 rounded-xl overflow-hidden border border-slate-800 shrink-0"
+                            title="Click to view full screen photo"
+                          >
+                            <SmartImage src={dish.image_url} alt={dish.name} className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-110" />
+                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                              <Maximize2 className="w-3.5 h-3.5 text-white" />
+                            </div>
+                          </div>
+                          <div>
+                            <div className="font-bold text-white text-sm">{dish.name}</div>
+                            <p className="text-[11px] text-slate-400 line-clamp-1">{dish.description}</p>
                           </div>
                         </div>
-                        <div>
-                          <div className="font-bold text-white text-sm">{dish.name}</div>
-                          <p className="text-[11px] text-slate-400 line-clamp-1">{dish.description}</p>
+                      </td>
+
+                      <td className="p-4 text-slate-300 font-medium">
+                        {cat?.name || 'General / Uncategorized'}
+                      </td>
+
+                      <td className="p-4 font-bold text-white text-sm">
+                        ₹{dish.price}
+                      </td>
+
+                      <td className="p-4 text-slate-400">
+                        {dish.prep_time} mins
+                      </td>
+
+                      <td className="p-4">
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${dish.is_veg ? 'bg-emerald-950 text-emerald-400 border border-emerald-500/30' : 'bg-rose-950 text-rose-400 border border-rose-500/30'}`}>
+                          {dish.is_veg ? 'VEG' : 'NON-VEG'}
+                        </span>
+                      </td>
+
+                      <td className="p-4">
+                        <button
+                          onClick={() => toggleMenuItemAvailability(dish.id)}
+                          className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase transition-all ${
+                            dish.is_available ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' : 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
+                          }`}
+                        >
+                          {dish.is_available ? 'In Stock' : 'Out of Stock'}
+                        </button>
+                      </td>
+
+                      <td className="p-4 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            onClick={() => openEditModal(dish)}
+                            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium text-xs transition-all flex items-center gap-1"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" /> Edit
+                          </button>
+                          <button
+                            title="Delete Dish"
+                            disabled={deletingDishId === dish.id}
+                            onClick={async () => {
+                              if (window.confirm(`Are you sure you want to remove "${dish.name}" from the menu?`)) {
+                                setDeletingDishId(dish.id);
+                                await deleteMenuItem(dish.id);
+                                setDeletingDishId(null);
+                              }
+                            }}
+                            className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 transition-all disabled:opacity-50"
+                          >
+                            {deletingDishId === dish.id ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Trash2 className="w-3.5 h-3.5" />
+                            )}
+                          </button>
                         </div>
-                      </div>
-                    </td>
-
-                    <td className="p-4 text-slate-300 font-medium">
-                      {cat?.name || 'Uncategorized'}
-                    </td>
-
-                    <td className="p-4 font-bold text-white text-sm">
-                      ₹{dish.price}
-                    </td>
-
-                    <td className="p-4 text-slate-400">
-                      {dish.prep_time} mins
-                    </td>
-
-                    <td className="p-4">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${dish.is_veg ? 'bg-emerald-950 text-emerald-400 border border-emerald-500/30' : 'bg-rose-950 text-rose-400 border border-rose-500/30'}`}>
-                        {dish.is_veg ? 'VEG' : 'NON-VEG'}
-                      </span>
-                    </td>
-
-                    <td className="p-4">
-                      <button
-                        onClick={() => toggleMenuItemAvailability(dish.id)}
-                        className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase transition-all ${
-                          dish.is_available ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' : 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
-                        }`}
-                      >
-                        {dish.is_available ? 'In Stock' : 'Out of Stock'}
-                      </button>
-                    </td>
-
-                    <td className="p-4 text-right">
-                      <button
-                        onClick={() => openEditModal(dish)}
-                        className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium text-xs transition-all"
-                      >
-                        <Edit2 className="w-3.5 h-3.5 inline mr-1" /> Edit
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>
@@ -268,7 +372,14 @@ export const MenuManagement: React.FC = () => {
               />
               <div className="flex justify-end gap-2">
                 <button type="button" onClick={() => setShowCatModal(false)} className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-bold">Cancel</button>
-                <button type="submit" className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">Save Category</button>
+                <button
+                  type="submit"
+                  disabled={isSavingCat}
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5"
+                >
+                  {isSavingCat && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  {isSavingCat ? 'Saving...' : 'Save Category'}
+                </button>
               </div>
             </form>
           </div>
@@ -301,9 +412,13 @@ export const MenuManagement: React.FC = () => {
                     onChange={(e) => setDishForm({ ...dishForm, category_id: e.target.value })}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-xs text-white focus:border-emerald-500 outline-none"
                   >
-                    {restCategories.map(c => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
+                    {restCategories.length === 0 ? (
+                      <option value="">General (Auto-created)</option>
+                    ) : (
+                      restCategories.map(c => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))
+                    )}
                   </select>
                 </div>
                 <div>
@@ -394,12 +509,16 @@ export const MenuManagement: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  disabled={isValidatingImage}
+                  disabled={isValidatingImage || isSavingDish}
                   className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 text-white text-xs font-bold shadow-lg shadow-emerald-600/30 flex items-center gap-2 disabled:opacity-50"
                 >
                   {isValidatingImage ? (
                     <>
                       <Loader2 className="w-3.5 h-3.5 animate-spin text-white" /> Verifying Image...
+                    </>
+                  ) : isSavingDish ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-white" /> Saving Dish...
                     </>
                   ) : (
                     'Save Dish'

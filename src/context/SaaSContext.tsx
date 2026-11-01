@@ -148,11 +148,13 @@ interface SaaSContextType {
   logoutOwner: () => void;
   updateOwnerProfile: (updates: Partial<Restaurant>) => Promise<void>;
   updateOwnerPassword: (oldPassword: string, newPassword: string) => Promise<boolean>;
-  addCategory: (name: string) => Promise<void>;
-  updateCategory: (id: string, name: string, is_hidden: boolean) => Promise<void>;
-  addMenuItem: (item: Omit<MenuItem, 'id' | 'restaurant_id'>) => Promise<void>;
-  updateMenuItem: (id: string, item: Partial<MenuItem>) => Promise<void>;
-  toggleMenuItemAvailability: (id: string) => Promise<void>;
+  addCategory: (name: string) => Promise<boolean>;
+  updateCategory: (id: string, name: string, is_hidden: boolean) => Promise<boolean>;
+  deleteCategory: (id: string) => Promise<boolean>;
+  addMenuItem: (item: Omit<MenuItem, 'id' | 'restaurant_id'>) => Promise<boolean>;
+  updateMenuItem: (id: string, item: Partial<MenuItem>) => Promise<boolean>;
+  deleteMenuItem: (id: string) => Promise<boolean>;
+  toggleMenuItemAvailability: (id: string) => Promise<boolean>;
   addTable: (tableNumber: string) => Promise<void>;
   clearTableSession: (tableId: string) => Promise<void>;
   addStaffMember: (name: string, mobile: string, pass: string, role: 'waiter' | 'kitchen') => Promise<void>;
@@ -4804,154 +4806,369 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return true;
   };
 
-  const addCategory = async (name: string) => {
-    if (!currentOwner) return;
-    const newCat = {
-      id: crypto.randomUUID(),
-      restaurant_id: currentOwner.id,
-      name,
-      sort_order: categories.filter(c => c.restaurant_id === currentOwner.id).length + 1,
-      is_hidden: false
-    };
-    // Instant optimistic update
-    setCategories(prev => [...prev, newCat as any]);
-    showToast(`Category '${name}' added.`, 'success');
-
-    logAudit({
-      restaurant_id: currentOwner.id,
-      actor_type: 'owner',
-      actor_id: currentOwner.id,
-      actor_name: currentOwner.owner_name,
-      actor_role: 'owner',
-      action: 'ADD_CATEGORY',
-      description: `Added category '${name}'`
-    });
-
-    (async () => {
-      try {
-        const { error } = await supabase.from('menu_categories').insert([newCat]);
-        if (error) console.warn("Add category background error:", error);
-      } catch {}
-    })();
-  };
-
-  const updateCategory = async (id: string, name: string, is_hidden: boolean) => {
-    // Instant optimistic update
-    setCategories(prev => prev.map(c => c.id === id ? { ...c, name, is_hidden } : c));
-    showToast('Category updated.', 'success');
-
-    if (currentOwner) {
-      logAudit({
-        restaurant_id: currentOwner.id,
-        actor_type: 'owner',
-        actor_id: currentOwner.id,
-        actor_name: currentOwner.owner_name,
-        actor_role: 'owner',
-        action: 'UPDATE_CATEGORY',
-        description: `Updated category '${name}'`
-      });
+  const addCategory = async (name: string): Promise<boolean> => {
+    const activeRestId = currentOwner?.id || currentStaff?.restaurant_id;
+    if (!activeRestId) {
+      showToast('রেস্তোরাঁ পাওয়া যায়নি। অনুগ্রহ করে লগইন করুন।', 'error');
+      return false;
+    }
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      showToast('ক্যাটেগরির নাম খালি হতে পারে না।', 'error');
+      return false;
     }
 
-    (async () => {
-      try {
-        const { error } = await supabase.from('menu_categories').update({ name, is_hidden }).eq('id', id);
-        if (error) console.warn("Update category background error:", error);
-      } catch {}
-    })();
+    const newCat: MenuCategory = {
+      id: crypto.randomUUID(),
+      restaurant_id: activeRestId,
+      name: trimmedName,
+      sort_order: categories.filter(c => c.restaurant_id === activeRestId).length + 1,
+      is_hidden: false
+    };
+
+    // Instant optimistic update
+    setCategories(prev => [...prev, newCat]);
+
+    try {
+      const { error } = await supabase.from('menu_categories').insert([newCat]);
+      if (error) {
+        console.error("Supabase addCategory error:", error);
+        // Rollback optimistic update
+        setCategories(prev => prev.filter(c => c.id !== newCat.id));
+        showToast(`Category save error: ${error.message}`, 'error');
+        return false;
+      }
+
+      showToast(`Category '${trimmedName}' added successfully.`, 'success');
+
+      const actor = currentStaff ? currentStaff.name : (currentOwner ? currentOwner.owner_name : 'Owner');
+      logAudit({
+        restaurant_id: activeRestId,
+        actor_type: (currentStaff ? 'staff' : 'owner') as any,
+        actor_id: currentOwner?.id || currentStaff?.id,
+        actor_name: actor,
+        actor_role: currentStaff ? currentStaff.role : 'owner',
+        action: 'ADD_CATEGORY',
+        description: `Added category '${trimmedName}'`
+      });
+
+      broadcastRealtimeEvent('menu_updated', { restaurant_id: activeRestId });
+      await fetchAllFromSupabase(true).catch(e => console.warn("BG fetch error:", e));
+      return true;
+    } catch (err: any) {
+      console.error("Add category exception:", err);
+      setCategories(prev => prev.filter(c => c.id !== newCat.id));
+      showToast(`Error: ${err.message || 'Network error'}`, 'error');
+      return false;
+    }
   };
 
-  const addMenuItem = async (item: Omit<MenuItem, 'id' | 'restaurant_id'>) => {
-    if (!currentOwner) return;
-    const newItem = {
+  const updateCategory = async (id: string, name: string, is_hidden: boolean): Promise<boolean> => {
+    const activeRestId = currentOwner?.id || currentStaff?.restaurant_id;
+    const oldCat = categories.find(c => c.id === id);
+    if (!oldCat) return false;
+
+    const trimmedName = name.trim() || oldCat.name;
+
+    // Instant optimistic update
+    setCategories(prev => prev.map(c => c.id === id ? { ...c, name: trimmedName, is_hidden } : c));
+
+    try {
+      const { error } = await supabase.from('menu_categories').update({ name: trimmedName, is_hidden }).eq('id', id);
+      if (error) {
+        console.error("Supabase updateCategory error:", error);
+        setCategories(prev => prev.map(c => c.id === id ? oldCat : c));
+        showToast(`Category update error: ${error.message}`, 'error');
+        return false;
+      }
+
+      showToast('Category updated successfully.', 'success');
+
+      if (activeRestId) {
+        const actor = currentStaff ? currentStaff.name : (currentOwner ? currentOwner.owner_name : 'Owner');
+        logAudit({
+          restaurant_id: activeRestId,
+          actor_type: (currentStaff ? 'staff' : 'owner') as any,
+          actor_id: currentOwner?.id || currentStaff?.id,
+          actor_name: actor,
+          actor_role: currentStaff ? currentStaff.role : 'owner',
+          action: 'UPDATE_CATEGORY',
+          description: `Updated category '${trimmedName}'`
+        });
+      }
+
+      broadcastRealtimeEvent('menu_updated', { restaurant_id: activeRestId });
+      await fetchAllFromSupabase(true).catch(e => console.warn("BG fetch error:", e));
+      return true;
+    } catch (err: any) {
+      console.error("Update category exception:", err);
+      setCategories(prev => prev.map(c => c.id === id ? oldCat : c));
+      showToast(`Error: ${err.message || 'Network error'}`, 'error');
+      return false;
+    }
+  };
+
+  const deleteCategory = async (id: string): Promise<boolean> => {
+    const activeRestId = currentOwner?.id || currentStaff?.restaurant_id;
+    const oldCat = categories.find(c => c.id === id);
+    if (!oldCat) return false;
+
+    setCategories(prev => prev.filter(c => c.id !== id));
+    setMenuItems(prev => prev.filter(m => m.category_id !== id));
+
+    try {
+      // First delete dishes of this category in Supabase
+      await supabase.from('menus').delete().eq('category_id', id);
+      const { error } = await supabase.from('menu_categories').delete().eq('id', id);
+      if (error) {
+        console.error("Supabase deleteCategory error:", error);
+        await fetchAllFromSupabase(true);
+        showToast(`Category delete error: ${error.message}`, 'error');
+        return false;
+      }
+
+      showToast(`Category '${oldCat.name}' deleted.`, 'success');
+
+      if (activeRestId) {
+        const actor = currentStaff ? currentStaff.name : (currentOwner ? currentOwner.owner_name : 'Owner');
+        logAudit({
+          restaurant_id: activeRestId,
+          actor_type: (currentStaff ? 'staff' : 'owner') as any,
+          actor_id: currentOwner?.id || currentStaff?.id,
+          actor_name: actor,
+          actor_role: currentStaff ? currentStaff.role : 'owner',
+          action: 'DELETE_CATEGORY',
+          description: `Deleted category '${oldCat.name}'`
+        });
+      }
+
+      broadcastRealtimeEvent('menu_updated', { restaurant_id: activeRestId });
+      await fetchAllFromSupabase(true).catch(e => console.warn("BG fetch error:", e));
+      return true;
+    } catch (err: any) {
+      console.error("Delete category exception:", err);
+      await fetchAllFromSupabase(true);
+      showToast(`Error: ${err.message || 'Network error'}`, 'error');
+      return false;
+    }
+  };
+
+  const addMenuItem = async (item: Omit<MenuItem, 'id' | 'restaurant_id'>): Promise<boolean> => {
+    const activeRestId = currentOwner?.id || currentStaff?.restaurant_id;
+    if (!activeRestId) {
+      showToast('রেস্তোরাঁ পাওয়া যায়নি। অনুগ্রহ করে লগইন করুন।', 'error');
+      return false;
+    }
+
+    // Crucial: Sanitize category_id to prevent PostgreSQL UUID syntax error 22P02 on empty strings
+    let validCategoryId: string | null = null;
+    if (item.category_id && typeof item.category_id === 'string' && item.category_id.trim() !== '') {
+      validCategoryId = item.category_id.trim();
+    } else {
+      // If no category was selected, find the first available category for this restaurant
+      const existingCat = categories.find(c => c.restaurant_id === activeRestId);
+      if (existingCat) {
+        validCategoryId = existingCat.id;
+      } else {
+        validCategoryId = null; // null is valid for UUID columns in PostgreSQL, empty string "" is NOT!
+      }
+    }
+
+    const newItem: MenuItem = {
       id: crypto.randomUUID(),
-      restaurant_id: currentOwner.id,
-      category_id: item.category_id,
-      name: item.name,
-      description: item.description || '',
-      price: item.price,
-      image_url: item.image_url || '',
-      prep_time: item.prep_time || 15,
+      restaurant_id: activeRestId,
+      category_id: validCategoryId as any,
+      name: item.name.trim(),
+      description: item.description?.trim() || '',
+      price: Number(item.price) || 0,
+      image_url: item.image_url?.trim() || '',
+      prep_time: Number(item.prep_time) || 15,
       is_veg: item.is_veg ?? true,
       is_available: item.is_available ?? true,
       is_popular: item.is_popular ?? false,
       is_recommended: item.is_recommended ?? false,
-      spicy_level: item.spicy_level || 0,
-      sort_order: menuItems.filter(m => m.restaurant_id === currentOwner.id).length + 1
+      spicy_level: Number(item.spicy_level) || 0,
+      sort_order: menuItems.filter(m => m.restaurant_id === activeRestId).length + 1
     };
 
     // Instant optimistic update
-    setMenuItems(prev => [...prev, newItem as any]);
-    showToast(`Dish '${item.name}' added to menu.`, 'success');
+    setMenuItems(prev => [...prev, newItem]);
 
-    logAudit({
-      restaurant_id: currentOwner.id,
-      actor_type: 'owner',
-      actor_id: currentOwner.id,
-      actor_name: currentOwner.owner_name,
-      actor_role: 'owner',
-      action: 'ADD_MENU_ITEM',
-      description: `Added dish '${item.name}' (₹${item.price})`
-    });
+    try {
+      const { error } = await supabase.from('menus').insert([newItem]);
+      if (error) {
+        console.error("Supabase addMenuItem error:", error);
+        // Rollback
+        setMenuItems(prev => prev.filter(m => m.id !== newItem.id));
+        showToast(`Menu item save error: ${error.message}`, 'error');
+        return false;
+      }
 
-    (async () => {
-      try {
-        const { error } = await supabase.from('menus').insert([newItem]);
-        if (error) console.warn("Add menu item background error:", error);
-      } catch {}
-    })();
-  };
+      showToast(`Dish '${newItem.name}' saved to menu.`, 'success');
 
-  const updateMenuItem = async (id: string, item: Partial<MenuItem>) => {
-    // Instant optimistic update
-    setMenuItems(prev => prev.map(m => m.id === id ? { ...m, ...item } : m));
-    showToast('Menu item updated.', 'success');
-
-    if (currentOwner) {
+      const actor = currentStaff ? currentStaff.name : (currentOwner ? currentOwner.owner_name : 'Owner');
       logAudit({
-        restaurant_id: currentOwner.id,
-        actor_type: 'owner',
-        actor_id: currentOwner.id,
-        actor_name: currentOwner.owner_name,
-        actor_role: 'owner',
-        action: 'UPDATE_MENU_ITEM',
-        description: `Updated dish '${item.name || 'item'}'`
+        restaurant_id: activeRestId,
+        actor_type: (currentStaff ? 'staff' : 'owner') as any,
+        actor_id: currentOwner?.id || currentStaff?.id,
+        actor_name: actor,
+        actor_role: currentStaff ? currentStaff.role : 'owner',
+        action: 'ADD_MENU_ITEM',
+        description: `Added dish '${newItem.name}' (₹${newItem.price})`
       });
-    }
 
-    (async () => {
-      try {
-        const { error } = await supabase.from('menus').update(item).eq('id', id);
-        if (error) console.warn("Update menu item background error:", error);
-      } catch {}
-    })();
+      broadcastRealtimeEvent('menu_updated', { restaurant_id: activeRestId });
+      await fetchAllFromSupabase(true).catch(e => console.warn("BG fetch error:", e));
+      return true;
+    } catch (err: any) {
+      console.error("Add menu item exception:", err);
+      setMenuItems(prev => prev.filter(m => m.id !== newItem.id));
+      showToast(`Error: ${err.message || 'Network error'}`, 'error');
+      return false;
+    }
   };
 
-  const toggleMenuItemAvailability = async (id: string) => {
+  const updateMenuItem = async (id: string, item: Partial<MenuItem>): Promise<boolean> => {
+    const activeRestId = currentOwner?.id || currentStaff?.restaurant_id;
+    const oldItem = menuItems.find(m => m.id === id);
+    if (!oldItem) return false;
+
+    // Sanitize updates: ensure category_id is valid UUID or null (never empty string "")
+    const sanitizedItem: any = { ...item };
+    if ('category_id' in sanitizedItem) {
+      if (!sanitizedItem.category_id || String(sanitizedItem.category_id).trim() === '') {
+        sanitizedItem.category_id = null;
+      } else {
+        sanitizedItem.category_id = String(sanitizedItem.category_id).trim();
+      }
+    }
+    if ('price' in sanitizedItem) sanitizedItem.price = Number(sanitizedItem.price);
+    if ('prep_time' in sanitizedItem) sanitizedItem.prep_time = Number(sanitizedItem.prep_time);
+    if ('spicy_level' in sanitizedItem) sanitizedItem.spicy_level = Number(sanitizedItem.spicy_level);
+
+    // Instant optimistic update
+    setMenuItems(prev => prev.map(m => m.id === id ? { ...m, ...sanitizedItem } : m));
+
+    try {
+      const { error } = await supabase.from('menus').update(sanitizedItem).eq('id', id);
+      if (error) {
+        console.error("Supabase updateMenuItem error:", error);
+        // Rollback
+        setMenuItems(prev => prev.map(m => m.id === id ? oldItem : m));
+        showToast(`Menu update error: ${error.message}`, 'error');
+        return false;
+      }
+
+      showToast(`Dish '${sanitizedItem.name || oldItem.name}' updated successfully.`, 'success');
+
+      if (activeRestId) {
+        const actor = currentStaff ? currentStaff.name : (currentOwner ? currentOwner.owner_name : 'Owner');
+        logAudit({
+          restaurant_id: activeRestId,
+          actor_type: (currentStaff ? 'staff' : 'owner') as any,
+          actor_id: currentOwner?.id || currentStaff?.id,
+          actor_name: actor,
+          actor_role: currentStaff ? currentStaff.role : 'owner',
+          action: 'UPDATE_MENU_ITEM',
+          description: `Updated dish '${sanitizedItem.name || oldItem.name}'`
+        });
+      }
+
+      broadcastRealtimeEvent('menu_updated', { restaurant_id: activeRestId });
+      await fetchAllFromSupabase(true).catch(e => console.warn("BG fetch error:", e));
+      return true;
+    } catch (err: any) {
+      console.error("Update menu item exception:", err);
+      setMenuItems(prev => prev.map(m => m.id === id ? oldItem : m));
+      showToast(`Error: ${err.message || 'Network error'}`, 'error');
+      return false;
+    }
+  };
+
+  const deleteMenuItem = async (id: string): Promise<boolean> => {
+    const activeRestId = currentOwner?.id || currentStaff?.restaurant_id;
+    const oldItem = menuItems.find(m => m.id === id);
+    if (!oldItem) return false;
+
+    // Instant optimistic update
+    setMenuItems(prev => prev.filter(m => m.id !== id));
+
+    try {
+      const { error } = await supabase.from('menus').delete().eq('id', id);
+      if (error) {
+        console.error("Supabase deleteMenuItem error:", error);
+        setMenuItems(prev => [...prev, oldItem]);
+        showToast(`Menu delete error: ${error.message}`, 'error');
+        return false;
+      }
+
+      showToast(`Dish '${oldItem.name}' removed from menu.`, 'success');
+
+      if (activeRestId) {
+        const actor = currentStaff ? currentStaff.name : (currentOwner ? currentOwner.owner_name : 'Owner');
+        logAudit({
+          restaurant_id: activeRestId,
+          actor_type: (currentStaff ? 'staff' : 'owner') as any,
+          actor_id: currentOwner?.id || currentStaff?.id,
+          actor_name: actor,
+          actor_role: currentStaff ? currentStaff.role : 'owner',
+          action: 'DELETE_MENU_ITEM',
+          description: `Deleted dish '${oldItem.name}'`
+        });
+      }
+
+      broadcastRealtimeEvent('menu_updated', { restaurant_id: activeRestId });
+      await fetchAllFromSupabase(true).catch(e => console.warn("BG fetch error:", e));
+      return true;
+    } catch (err: any) {
+      console.error("Delete menu item exception:", err);
+      setMenuItems(prev => [...prev, oldItem]);
+      showToast(`Error: ${err.message || 'Network error'}`, 'error');
+      return false;
+    }
+  };
+
+  const toggleMenuItemAvailability = async (id: string): Promise<boolean> => {
     const existing = menuItems.find(m => m.id === id);
-    if (existing) {
-      const nextAvailable = !existing.is_available;
-      // Instant optimistic update
-      setMenuItems(prev => prev.map(m => m.id === id ? { ...m, is_available: nextAvailable } : m));
+    if (!existing) return false;
+
+    const nextAvailable = !existing.is_available;
+    // Instant optimistic update
+    setMenuItems(prev => prev.map(m => m.id === id ? { ...m, is_available: nextAvailable } : m));
+
+    try {
+      const { error } = await supabase.from('menus').update({ is_available: nextAvailable }).eq('id', id);
+      if (error) {
+        console.error("Supabase toggleMenuItemAvailability error:", error);
+        setMenuItems(prev => prev.map(m => m.id === id ? existing : m));
+        showToast(`Availability update error: ${error.message}`, 'error');
+        return false;
+      }
+
       showToast(`Dish '${existing.name}' marked ${nextAvailable ? 'Available' : 'Unavailable'}.`, 'info');
 
-      if (currentOwner) {
+      const activeRestId = currentOwner?.id || currentStaff?.restaurant_id;
+      if (activeRestId) {
+        const actor = currentStaff ? currentStaff.name : (currentOwner ? currentOwner.owner_name : 'Owner');
         logAudit({
-          restaurant_id: currentOwner.id,
-          actor_type: 'owner',
-          actor_id: currentOwner.id,
-          actor_name: currentOwner.owner_name,
-          actor_role: 'owner',
+          restaurant_id: activeRestId,
+          actor_type: (currentStaff ? 'staff' : 'owner') as any,
+          actor_id: currentOwner?.id || currentStaff?.id,
+          actor_name: actor,
+          actor_role: currentStaff ? currentStaff.role : 'owner',
           action: 'TOGGLE_MENU_AVAILABILITY',
           description: `Toggled availability for '${existing.name}' to ${nextAvailable}`
         });
       }
 
-      (async () => {
-        try {
-          const { error } = await supabase.from('menus').update({ is_available: nextAvailable }).eq('id', id);
-          if (error) console.warn("Toggle menu availability background error:", error);
-        } catch {}
-      })();
+      broadcastRealtimeEvent('menu_updated', { restaurant_id: activeRestId });
+      await fetchAllFromSupabase(true).catch(e => console.warn("BG fetch error:", e));
+      return true;
+    } catch (err: any) {
+      console.error("Toggle availability exception:", err);
+      setMenuItems(prev => prev.map(m => m.id === id ? existing : m));
+      showToast(`Error: ${err.message || 'Network error'}`, 'error');
+      return false;
     }
   };
 
@@ -7670,7 +7887,7 @@ export const SaaSProvider: React.FC<{ children: React.ReactNode }> = ({ children
       addRestaurant, updateRestaurant, suspendRestaurant,
       resumeRestaurant, grantTrial, endTrial, extendTrial, grantFreeOffer, endFreeOffer, extendFreeOffer, grantFreeExtension, grantFreePlan, grantFreeDays, renewSubscription, renewRestaurantMonthly, archiveRestaurant, deleteRestaurantPermanently, deleteOldRestaurantData, clearRestaurantData, deleteRestaurantDataByTime,
       factoryResetRestaurant, executeProductionReset, updateCommissionStatus, loginOwner, logoutOwner, updateOwnerProfile, updateOwnerPassword,
-      addCategory, updateCategory, addMenuItem, updateMenuItem, toggleMenuItemAvailability,
+      addCategory, updateCategory, deleteCategory, addMenuItem, updateMenuItem, deleteMenuItem, toggleMenuItemAvailability,
       addTable, clearTableSession, addStaffMember, toggleStaffStatus, deleteStaffMember, updateStaffPassword,
       loginStaff, logoutStaff, acceptCallRequest, completeCallRequest, verifyCashOrder, recordOfflinePayment,
       settleCompletedOrderPayment, sendTestPushNotification,
